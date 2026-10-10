@@ -499,250 +499,6 @@ static BOOL DYYYViewIsInUserProfileDetailContext(UIView *view) {
         viewController, @[ @"UserHome", @"UserProfile", @"ProfileViewController", @"ProfileHome" ]);
 }
 
-// 临时诊断：列出窗口里所有「高度或宽度 > 600pt」的视图及其层级缩进，
-// 一次性看清 843 这个高度到底卡在哪一层（避免逐层猜）。
-static void DYYYCollectLargeViews(UIView *view, NSMutableString *out, NSInteger depth, NSInteger *budget, NSInteger *count) {
-    if (!view || depth > 30 || *budget <= 0 || *count >= 40) {
-        return;
-    }
-    *budget -= 1;
-
-    CGFloat height = view.frame.size.height;
-    CGFloat width = view.frame.size.width;
-    if (height > 600.0 || width > 600.0) {
-        NSString *className = NSStringFromClass([view class]);
-        if (className.length > 44) {
-            className = [className substringToIndex:44];
-        }
-        NSMutableString *indent = [NSMutableString string];
-        for (NSInteger index = 0; index < MIN(depth, 12); index++) {
-            [indent appendString:@"."];
-        }
-        [out appendFormat:@"%@%@\n%@ h=%.0f w=%.0f y=%.0f x=%.0f\n",
-                          indent, className, indent, height, width, view.frame.origin.y, view.frame.origin.x];
-        *count += 1;
-    }
-    for (UIView *subview in view.subviews) {
-        DYYYCollectLargeViews(subview, out, depth + 1, budget, count);
-    }
-}
-
-// 临时诊断：列出窗口里所有可见的滚动容器（跳过诊断浮窗自身），用于找出被挪动 83pt 的那一层。
-static void DYYYCollectScrollViews(UIView *view, NSMutableString *out, NSInteger depth, NSInteger *budget) {
-    if (!view || depth > 30 || *budget <= 0) {
-        return;
-    }
-    *budget -= 1;
-
-    BOOL interesting = [view isKindOfClass:[UIScrollView class]] ||
-                       [view isKindOfClass:[UITableView class]] ||
-                       [view isKindOfClass:[UICollectionView class]];
-    if (interesting) {
-        NSString *className = NSStringFromClass([view class]);
-        // 只报占屏比例大的容器，避免被小控件刷屏。
-        if (view.frame.size.height > 300.0 || view.frame.size.width > 300.0) {
-            UIScrollView *scrollView = [view isKindOfClass:[UIScrollView class]] ? (UIScrollView *)view : nil;
-            [out appendFormat:@"%@\n   y=%.0f h=%.0f w=%.0f off=%.0f\n",
-                              className, view.frame.origin.y, view.frame.size.height,
-                              view.frame.size.width, scrollView ? scrollView.contentOffset.y : -1.0];
-        }
-    }
-    for (UIView *subview in view.subviews) {
-        DYYYCollectScrollViews(subview, out, depth + 1, budget);
-    }
-}
-
-// 临时诊断：记录详情表格 layoutSubviews 的调用次数与上次高度，用于确认 hook 是否真的在跑。
-static volatile int32_t gDYYYTableLayoutTick = 0;
-static volatile CGFloat gDYYYTableLastHeight = 0.0;
-
-static void DYYYNoteDetailTableLayout(CGFloat height) {
-    gDYYYTableLayoutTick += 1;
-    gDYYYTableLastHeight = height;
-}
-
-// 临时诊断：列出「关键几层」的几何信息（默认只保留最有解释力的类），避免清单过长被截断。
-static void DYYYCollectInterestingViews(UIView *view, NSMutableString *out, NSInteger depth, NSInteger *budget) {
-    if (!view || depth > 30 || *budget <= 0) {
-        return;
-    }
-    *budget -= 1;
-
-    static NSArray<NSString *> *interestingClasses = nil;
-    if (!interestingClasses) {
-        interestingClasses = @[
-            @"AWEAwemeDetailTableView", @"AWEAwemeDetailTableViewCell", @"TTPLayerView",
-            @"TTMetalViewVP", @"AWEStoryContainerCollectionView", @"LivePhotoContentAdapt",
-            @"AWEPlayInteractionView", @"AWEDPlayer", @"AWEAwemePlayVideo"
-        ];
-    }
-
-    CGFloat height = view.frame.size.height;
-    if (height > 600.0) {
-        NSString *className = NSStringFromClass([view class]);
-        for (NSString *interesting in interestingClasses) {
-            if ([className containsString:interesting]) {
-                NSString *shortName = className.length > 46 ? [className substringToIndex:46] : className;
-                [out appendFormat:@"%@ h=%.0f y=%.0f\n", shortName, height, view.frame.origin.y];
-                break;
-            }
-        }
-    }
-    for (UIView *subview in view.subviews) {
-        DYYYCollectInterestingViews(subview, out, depth + 1, budget);
-    }
-}
-
-// 临时诊断：按类名前缀找一个视图（用于定位真正的视频渲染层）。
-static UIView *DYYYFindFirstViewWithClassPrefix(UIView *view, NSString *prefix) {
-    if (!view) {
-        return nil;
-    }
-    NSString *className = NSStringFromClass([view class]);
-    if (className.length > 0 && [className hasPrefix:prefix]) {
-        return view;
-    }
-    for (UIView *subview in view.subviews) {
-        UIView *found = DYYYFindFirstViewWithClassPrefix(subview, prefix);
-        if (found) {
-            return found;
-        }
-    }
-    return nil;
-}
-
-// 临时诊断：沿父视图链打印每层的 frame / bounds / center / transform。
-// 关键判据：若某层 frame ≠ bounds，说明存在 transform，改 frame 高度是无效的。
-static void DYYYCollectGeometryChain(UIView *view, NSMutableString *out, NSInteger levels) {
-    UIView *current = view;
-    for (NSInteger index = 0; current && index < levels; index++) {
-        CGRect frame = current.frame;
-        CGRect bounds = current.bounds;
-        CGAffineTransform transform = current.transform;
-        BOOL scaled = !CGAffineTransformIsIdentity(transform);
-        NSString *className = NSStringFromClass([current class]);
-        if (className.length > 40) {
-            className = [className substringToIndex:40];
-        }
-        [out appendFormat:@"%@ f=%.0fx%.0f@%.0f,%.0f b=%.0fx%.0f c=%.0f,%.0f t=%@\n",
-                          className, frame.size.width, frame.size.height, frame.origin.x, frame.origin.y,
-                          bounds.size.width, bounds.size.height, current.center.x, current.center.y,
-                          scaled ? @"NON-IDENTITY" : @"-"];
-        current = current.superview;
-    }
-}
-
-// 临时诊断：把实测数值直接打到屏幕顶部的独立窗口里（层级高于宿主界面，不会被底栏遮住），
-// 这样无需连接日志工具，截图即可。定位完成后整段删除。
-static void DYYYUpdateFullscreenDiagnostic(UIViewController *viewController, NSString *source,
-                                           BOOL useFullHeight, CGRect frame, CGFloat superviewHeight) {
-    static UIWindow *dyyyDiagnosticWindow = nil;
-    static UILabel *dyyyDiagnosticLabel = nil;
-    static __weak UIViewController *dyyyDiagnosticOwner = nil;
-
-    if (!viewController) {
-        return;
-    }
-    // 详情页与其它页面共用本 hook；只在切换页面时重建，避免每帧刷新。
-    if (dyyyDiagnosticOwner != viewController) {
-        dyyyDiagnosticOwner = viewController;
-        if (!dyyyDiagnosticWindow) {
-            dyyyDiagnosticWindow = [[UIWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
-            dyyyDiagnosticWindow.windowLevel = UIWindowLevelAlert + 100.0;
-            dyyyDiagnosticWindow.backgroundColor = [UIColor clearColor];
-            dyyyDiagnosticWindow.userInteractionEnabled = NO;
-            dyyyDiagnosticLabel = [[UILabel alloc] initWithFrame:CGRectZero];
-            dyyyDiagnosticLabel.numberOfLines = 0;
-            dyyyDiagnosticLabel.font = [UIFont monospacedSystemFontOfSize:11.0 weight:UIFontWeightBold];
-            dyyyDiagnosticLabel.textColor = [UIColor yellowColor];
-            dyyyDiagnosticLabel.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.75];
-            [dyyyDiagnosticWindow addSubview:dyyyDiagnosticLabel];
-            dyyyDiagnosticWindow.hidden = NO;
-        }
-    }
-    if (!dyyyDiagnosticWindow || !dyyyDiagnosticLabel) {
-        return;
-    }
-
-    CGFloat screenHeight = [UIScreen mainScreen].bounds.size.height;
-    // 找出真正的视频渲染层，并沿父链打印几何信息（frame/bounds/center/transform）。
-    NSMutableString *scrollText = [NSMutableString string];
-    NSArray<UIWindow *> *windows = [UIApplication sharedApplication].windows;
-    UIView *playerView = nil;
-    UIView *scanWindow = nil;
-    for (UIWindow *candidateWindow in windows) {
-        if (candidateWindow.hidden || candidateWindow.alpha < 0.01 || candidateWindow == dyyyDiagnosticWindow) {
-            continue;
-        }
-        scanWindow = candidateWindow;
-        playerView = DYYYFindFirstViewWithClassPrefix(candidateWindow, @"TTPLayerView");
-        if (!playerView) {
-            playerView = DYYYFindFirstViewWithClassPrefix(candidateWindow, @"TTMetalViewVP");
-        }
-        if (playerView) {
-            break;
-        }
-    }
-    if (playerView) {
-        [scrollText appendString:@"=== player view chain ===\n"];
-        DYYYCollectGeometryChain(playerView, scrollText, 8);
-    } else {
-        [scrollText appendString:@"(player view not found)\n"];
-    }
-    if (scanWindow) {
-        [scrollText appendString:@"-- key layers --\n"];
-        NSInteger budget = 3000;
-        DYYYCollectInterestingViews(scanWindow, scrollText, 0, &budget);
-    }
-    if (scrollText.length == 0) {
-        [scrollText appendString:@"(no large view)"];
-    }
-
-    NSString *text = [NSString stringWithFormat:
-                                   @"tblTick=%d tblLastH=%.0f ctrlH=%.0f scr=%.0f tab=%.0f\n%@",
-                                   (int)gDYYYTableLayoutTick, gDYYYTableLastHeight,
-                                   frame.size.height, screenHeight, gCurrentTabBarHeight, scrollText];
-    dyyyDiagnosticLabel.text = text;
-    CGSize fit = [dyyyDiagnosticLabel sizeThatFits:CGSizeMake(dyyyDiagnosticWindow.bounds.size.width - 16.0, CGFLOAT_MAX)];
-    CGFloat labelWidth = dyyyDiagnosticWindow.bounds.size.width - 16.0;
-    dyyyDiagnosticLabel.frame = CGRectMake(8.0, 60.0, labelWidth, fit.height + 8.0);
-    dyyyDiagnosticWindow.hidden = NO;
-}
-
-// 临时诊断日志：进入视频详情页时打一次完整控制器链，用来确认该页真实的 referString 与层级。
-static void DYYYLogVideoDetailContextOnce(UIViewController *viewController) {
-    static BOOL dyyyDidDumpVideoDetailContext = NO;
-    if (dyyyDidDumpVideoDetailContext) {
-        return;
-    }
-    dyyyDidDumpVideoDetailContext = YES;
-
-    NSMutableArray<NSString *> *chain = [NSMutableArray array];
-    for (UIViewController *current = viewController; current; current = current.parentViewController) {
-        [chain addObject:NSStringFromClass([current class])];
-    }
-
-    NSLog(@"[DYYY][ProfileFS] appear vc=%@ refer=%@ tabBar=%.1f viewH=%.1f superH=%.1f chain=%@",
-          NSStringFromClass([viewController class]), DYYYVideoDetailReferString(viewController) ?: @"(nil)", gCurrentTabBarHeight,
-          viewController.view.frame.size.height, viewController.view.superview.frame.size.height,
-          [chain componentsJoinedByString:@" > "]);
-
-    // 详情 table 的高度会被 -setFrame: 补到屏幕高的整数倍，这里一并记录，便于判断整页偏移来自哪一层。
-    UIView *probe = viewController.view.superview;
-    NSInteger depth = 0;
-    while (probe && depth < 8) {
-        if ([probe isKindOfClass:NSClassFromString(@"AWEAwemeDetailTableView")]) {
-            CGFloat screenHeight = [UIScreen mainScreen].bounds.size.height;
-            CGFloat remainder = screenHeight > 0 ? fmod(probe.frame.size.height, screenHeight) : 0;
-            NSLog(@"[DYYY][ProfileFS] table h=%.1f screenH=%.1f remainder=%.1f contentH=%.1f contentOffsetY=%.1f",
-                  probe.frame.size.height, screenHeight, remainder, [(UIScrollView *)probe contentSize].height,
-                  [(UIScrollView *)probe contentOffset].y);
-            break;
-        }
-        probe = probe.superview;
-        depth++;
-    }
-}
 
 static NSDictionary<NSString *, NSString *> *DYYYTopTabTitleMapping(void) {
     static NSString *cachedRawValue = nil;
@@ -16430,12 +16186,6 @@ static Class tabBarButtonClass = nil;
     DYYYScheduleCurrentAwemeTracking(self, self.model);
     DYYYEnsureFloatSpeedButton(self);
     reloadClearButtonConfiguration();
-
-    // 临时诊断：等这一帧布局落定后再打，才能看到真实 referString 与高度。
-    __weak AWEPlayInteractionViewController *dyyyLogWeakSelf = self;
-    dispatch_async(dispatch_get_main_queue(), ^{
-      DYYYLogVideoDetailContextOnce(dyyyLogWeakSelf);
-    });
 }
 
 - (void)setModel:(AWEAwemeModel *)model {
@@ -16503,8 +16253,6 @@ static Class tabBarButtonClass = nil;
     CGFloat superviewHeight = self.view.superview.frame.size.height;
 
     if (frame.size.width != screenWidth && frame.size.height < superviewHeight) {
-        // 临时诊断：这一条早退会让全屏修复完全失效，先把早退时的真实宽高打出来。
-        DYYYUpdateFullscreenDiagnostic(self, @"early-return-w-h", NO, frame, superviewHeight);
         return;
     }
 
@@ -16559,10 +16307,6 @@ static Class tabBarButtonClass = nil;
     } else {
         frame.size.height = superviewHeight - gCurrentTabBarHeight;
     }
-
-    DYYYUpdateFullscreenDiagnostic(self,
-                                   profileReferStringMatched ? @"END-profile-refer" : (comesFromUserProfile ? @"END-profile-chain" : @"END-default"),
-                                   useFullHeight, frame, fullscreenHeight);
 
     if (fabs(frame.size.height - self.view.frame.size.height) > 0.5) {
         self.view.frame = frame;
@@ -17593,8 +17337,6 @@ static void DYYYRemoveAppLifecycleObservers(void) {
 // 表格在主页场景仍被宿主还原成 843（约束或后续布局），这里在 layout 之后强制顶到整屏：
 // 表格是裁剪窗口，843 的窗口配 926 的 cell 必然每次都露出 83pt 相邻画面。
 - (void)layoutSubviews {
-    DYYYNoteDetailTableLayout(self.frame.size.height);
-
     %orig;
 
     if (!DYYYGetBool(@"DYYYEnableFullScreen")) {
@@ -17634,17 +17376,37 @@ static void DYYYRemoveAppLifecycleObservers(void) {
         self.frame = frame;
     }
 
-    // 宿主布局可能在本方法之后继续覆盖，延到本次 runloop 末尾再设定一次。
+    // 宿主布局可能在本方法之后继续覆盖，延到本次 runloop 末尾统一收口：
+    // ① 表格窗口顶到整屏；② 把可见 cell 全部统一到整屏高（不同页原本 843/926 混杂，
+    // 滚到 843 的页就会露出相邻内容，这正是「时好时坏」的来源）；
+    // ③ 关掉分页吸附——吸附要求「窗口高 == 页高」，是本问题链的根源假设。
     __weak AWEAwemeDetailTableView *weakSelf = self;
     dispatch_async(dispatch_get_main_queue(), ^{
       AWEAwemeDetailTableView *strongSelf = weakSelf;
       if (!strongSelf) {
           return;
       }
+      if (!DYYYViewIsInUserProfileDetailContext(strongSelf)) {
+          return;
+      }
+      CGFloat height = [UIScreen mainScreen].bounds.size.height;
+
       CGRect lateFrame = strongSelf.frame;
-      if (lateFrame.size.height < screenHeight && DYYYViewIsInUserProfileDetailContext(strongSelf)) {
-          lateFrame.size.height = screenHeight;
+      if (lateFrame.size.height < height) {
+          lateFrame.size.height = height;
           strongSelf.frame = lateFrame;
+      }
+      strongSelf.pagingEnabled = NO;
+
+      for (UIView *candidate in strongSelf.subviews) {
+          if (![candidate isKindOfClass:NSClassFromString(@"AWEAwemeDetailTableViewCell")]) {
+              continue;
+          }
+          CGRect cellFrame = candidate.frame;
+          if (cellFrame.size.height > 1.0 && cellFrame.size.height < height) {
+              cellFrame.size.height = height;
+              candidate.frame = cellFrame;
+          }
       }
     });
 }
