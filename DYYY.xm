@@ -552,6 +552,15 @@ static void DYYYCollectScrollViews(UIView *view, NSMutableString *out, NSInteger
     }
 }
 
+// 临时诊断：记录详情表格 layoutSubviews 的调用次数与上次高度，用于确认 hook 是否真的在跑。
+static volatile int32_t gDYYYTableLayoutTick = 0;
+static volatile CGFloat gDYYYTableLastHeight = 0.0;
+
+static void DYYYNoteDetailTableLayout(CGFloat height) {
+    gDYYYTableLayoutTick += 1;
+    gDYYYTableLastHeight = height;
+}
+
 // 临时诊断：按类名前缀找一个视图（用于定位真正的视频渲染层）。
 static UIView *DYYYFindFirstViewWithClassPrefix(UIView *view, NSString *prefix) {
     if (!view) {
@@ -659,9 +668,10 @@ static void DYYYUpdateFullscreenDiagnostic(UIViewController *viewController, NSS
     }
 
     NSString *text = [NSString stringWithFormat:
-                                   @"scr=%.0f ctrlH=%.0f tab=%.0f full=%@\n=== large views (h>600) ===\n%@",
+                                   @"scr=%.0f ctrlH=%.0f tab=%.0f full=%@\ntblTick=%d tblLastH=%.0f\n=== player view chain ===\n%@",
                                    screenHeight, frame.size.height, gCurrentTabBarHeight,
-                                   useFullHeight ? @"Y" : @"N", scrollText];
+                                   useFullHeight ? @"Y" : @"N",
+                                   (int)gDYYYTableLayoutTick, gDYYYTableLastHeight, scrollText];
     dyyyDiagnosticLabel.text = text;
     CGSize fit = [dyyyDiagnosticLabel sizeThatFits:CGSizeMake(dyyyDiagnosticWindow.bounds.size.width - 16.0, CGFLOAT_MAX)];
     CGFloat labelWidth = dyyyDiagnosticWindow.bounds.size.width - 16.0;
@@ -17553,6 +17563,8 @@ static void DYYYRemoveAppLifecycleObservers(void) {
 // 表格在主页场景仍被宿主还原成 843（约束或后续布局），这里在 layout 之后强制顶到整屏：
 // 表格是裁剪窗口，843 的窗口配 926 的 cell 必然每次都露出 83pt 相邻画面。
 - (void)layoutSubviews {
+    DYYYNoteDetailTableLayout(self.frame.size.height);
+
     %orig;
 
     if (!DYYYGetBool(@"DYYYEnableFullScreen")) {
