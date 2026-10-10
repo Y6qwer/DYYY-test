@@ -21,6 +21,13 @@
 
 static NSString *const kDYYYCADisableMinimumFrameDurationOnPhoneKey = @"CADisableMinimumFrameDurationOnPhone";
 
+// 崩溃隔离开关：宿主 40.6.0 + TrollFools 注入下，本模块的 installer 在 dyld
+// 初始化阶段（%ctor 内）执行时，曾以 EXC_BAD_ACCESS/SIGBUS 在 CoreFoundation
+// 崩溃（崩溃报告 ktriageinfo 显示 pmap_enter 反复因资源不足重试）。
+// 已知能正常运行的 Vex dylib 中不含本模块，故先整体停用以验证归因，
+// 置为 1 即可恢复（原加载期 plist 读写已改为启动后延后执行）。
+#define DYYY_HIGH_FPS_MODULE_ENABLED 0
+
 static atomic_bool gDYYYHighFPSStarted = false;
 static atomic_bool gDYYYCFBundleHookInstalled = false;
 static atomic_bool gDYYYDegradeHookInstalled = false;
@@ -402,6 +409,11 @@ static void DYYYApplyProMotionUnlock(BOOL enabled) {
 }
 
 void DYYYApplyHighFPSSettingChange(BOOL enabled) {
+#if !DYYY_HIGH_FPS_MODULE_ENABLED
+    // 模块停用：设置项保留但不再触碰宿主 Info.plist / ProMotion 门闩。
+    (void)enabled;
+    return;
+#else
     void (^block)(void) = ^{
       DYYYInstallLoadObserversIfNeeded();
       DYYYApplyProMotionUnlock(enabled);
@@ -423,9 +435,14 @@ void DYYYApplyHighFPSSettingChange(BOOL enabled) {
     } else {
         dispatch_async(dispatch_get_main_queue(), block);
     }
+#endif
 }
 
 void DYYYStartHighFPSHooks(void) {
+#if !DYYY_HIGH_FPS_MODULE_ENABLED
+    // 模块停用：不在 %ctor 阶段安装任何 hook、不注册任何 observer。
+    return;
+#else
     bool expected = false;
     if (!atomic_compare_exchange_strong(&gDYYYHighFPSStarted, &expected, true)) {
         return;
@@ -464,4 +481,5 @@ void DYYYStartHighFPSHooks(void) {
                                                         DYYYInvokeProMotionFPSBooster();
                                                     }
                                                   }];
+#endif
 }
