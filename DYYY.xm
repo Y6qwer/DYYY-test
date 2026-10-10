@@ -17482,6 +17482,33 @@ static void DYYYRemoveAppLifecycleObservers(void) {
         // 作者主页的视频详情页：容器高度被算成「屏幕高 − 底栏高」（实测 926−83=843），
         // 而交互视图已按屏幕高铺满，表格若仍是 843 就会裁掉底部 83pt（表现为画面下方留黑带）。
         // 这里对主页场景做确定性兜底：不到一屏就补到一屏。
+        if (frame.size.height < screenHeight) {
+            BOOL inProfile = DYYYViewIsInUserProfileDetailContext(self);
+            // 临时诊断：确认该 hook 是否被调用、判定是否命中（1 秒限流）。
+            static NSTimeInterval dyyyLastTableLogTime = 0;
+            NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
+            if (now - dyyyLastTableLogTime >= 1.0) {
+                dyyyLastTableLogTime = now;
+                NSLog(@"[DYYY][TableFS] inH=%.1f screenH=%.1f inProfile=%d", frame.size.height, screenHeight, inProfile);
+            }
+            if (inProfile) {
+                frame.size.height = screenHeight;
+            }
+        }
+    }
+    %orig(frame);
+}
+
+%end
+
+// 作者主页的视频详情 cell：它是这条测量链的源头——表格、内容视图、视频渲染层都跟着 cell 高度走。
+// 宿主把它算成「屏幕高 − 底栏高」（926−83=843），于是画面下方空出 83pt 露出相邻内容。
+// 这里在主页场景把它顶回整屏高（高度可逆，离开主页不生效）。
+%hook AWEAwemeDetailTableViewCell
+
+- (void)setFrame:(CGRect)frame {
+    if (DYYYGetBool(@"DYYYEnableFullScreen") && frame.size.height > 0.0) {
+        CGFloat screenHeight = [UIScreen mainScreen].bounds.size.height;
         if (frame.size.height < screenHeight && DYYYViewIsInUserProfileDetailContext(self)) {
             frame.size.height = screenHeight;
         }
