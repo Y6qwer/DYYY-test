@@ -540,10 +540,11 @@ static void DYYYUpdateFullscreenDiagnostic(UIViewController *viewController, NSS
     }
 
     NSString *text = [NSString stringWithFormat:
-                                   @"source=%@\nrefer=%@\nfullH=%@\nscreen=%.1f  superH=%.1f\ncurH=%.1f  tabBar=%.1f\nparent=%.1f  insetB=%.1f\n%@",
+                                   @"source=%@\nrefer=%@\nfullH=%@\nscreen=%.1f  superH=%.1f\ncurH=%.1f  tabBar=%.1f\nframe w=%.1f  x=%.1f  y=%.1f\nparent=%.1f  insetB=%.1f\n%@",
                                    source, DYYYVideoDetailReferString(viewController) ?: @"(nil)",
                                    useFullHeight ? @"YES" : @"NO", screenHeight, superviewHeight,
                                    frame.size.height, gCurrentTabBarHeight,
+                                   frame.size.width, frame.origin.x, frame.origin.y,
                                    viewController.view.superview ? viewController.view.superview.frame.size.height : -1.0,
                                    viewController.view.window.safeAreaInsets.bottom, tableText];
     dyyyDiagnosticLabel.text = text;
@@ -16346,6 +16347,8 @@ static Class tabBarButtonClass = nil;
     CGFloat superviewHeight = self.view.superview.frame.size.height;
 
     if (frame.size.width != screenWidth && frame.size.height < superviewHeight) {
+        // 临时诊断：这一条早退会让全屏修复完全失效，先把早退时的真实宽高打出来。
+        DYYYUpdateFullscreenDiagnostic(self, @"early-return-w-h", NO, frame, superviewHeight);
         return;
     }
 
@@ -16386,7 +16389,7 @@ static Class tabBarButtonClass = nil;
     }
 
     DYYYUpdateFullscreenDiagnostic(self,
-                                   profileReferStringMatched ? @"profile-refer" : (comesFromUserProfile ? @"profile-chain" : @"default"),
+                                   profileReferStringMatched ? @"END-profile-refer" : (comesFromUserProfile ? @"END-profile-chain" : @"END-default"),
                                    useFullHeight, frame, superviewHeight);
 
     if (fabs(frame.size.height - self.view.frame.size.height) > 0.5) {
