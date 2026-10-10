@@ -16980,25 +16980,14 @@ static void DYYYRemoveAppLifecycleObservers(void) {
                     subview.frame = frame;
                 }
             }
-            // 处理作者主页的情况
+            // 作者主页的情况：原实现在每次 layoutSubviews 里把作品图子视图下移一个
+            // 底栏高度（frame.origin.y += gCurrentTabBarHeight），且没有任何「只做一次」
+            // 的保护。抖音是按自身 frame 计算分页边界的，事后位移会让内容与页面边界错位，
+            // 滚动时露出相邻作品的画面（位置随机，因为位移次数不固定）。
+            // 该补丁是为旧版抖音写的「作品图片上移」修复，新版已不需要：
+            // 官方原版无此逻辑且显示正常，故停用（不删除，便于日后恢复）。
             else if (isAuthorProfile) {
-                // 检查是否是作品图片
-                BOOL isWorkImage = NO;
-
-                // 可以通过检查子视图、标签或其他特性来确定是否是作品图片
-                for (UIView *childView in subview.subviews) {
-                    if ([NSStringFromClass([childView class]) containsString:@"ImageView"] || [NSStringFromClass([childView class]) containsString:@"ThumbnailView"]) {
-                        isWorkImage = YES;
-                        break;
-                    }
-                }
-
-                if (isWorkImage) {
-                    // 修复作者主页作品图片上移问题
-                    CGRect frame = subview.frame;
-                    frame.origin.y += gCurrentTabBarHeight;
-                    subview.frame = frame;
-                }
+                // 已停用：不再对作品子视图做位移。
             }
         }
     }
