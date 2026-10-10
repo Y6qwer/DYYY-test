@@ -146,7 +146,7 @@ static NSURL *DYYYLoginBypassURLByReplacingBundleIdentifier(NSURL *url) {
 
 %hook NSURLSessionConfiguration
 - (NSDictionary *)HTTPAdditionalHeaders {
-    return DYYYLoginBypassHeadersByReplacingBundleIdentifiers(%orig);
+    return DYYYLoginBypassHeadersByReplacingBundleIdentifiers(%orig());
 }
 
 - (void)setHTTPAdditionalHeaders:(NSDictionary *)headers {
@@ -396,6 +396,133 @@ static void updateGlobalTransparencyCache() {
         }
     }
     gGlobalTransparency = kInvalidAlpha;
+}
+
+// 从作者主页进入视频详情页时，抖音把来源写成主页专属的 referString。
+// 沿响应链只能摸到最内层子控制器，因此同时按导航栈与父控制器两层匹配类名。
+static BOOL DYYYViewControllerChainContainsClassName(UIViewController *viewController, NSArray<NSString *> *classNames) {
+    if (!viewController || classNames.count == 0) {
+        return NO;
+    }
+
+    NSMutableArray<UIViewController *> *chain = [NSMutableArray array];
+    for (UIViewController *current = viewController; current; current = current.parentViewController) {
+        [chain addObject:current];
+        if (current.navigationController && ![chain containsObject:current.navigationController]) {
+            [chain addObject:current.navigationController];
+        }
+    }
+
+    for (UIViewController *current in chain) {
+        NSString *className = NSStringFromClass([current class]);
+        if (className.length == 0) {
+            continue;
+        }
+        for (NSString *candidate in classNames) {
+            if ([className containsString:candidate]) {
+                return YES;
+            }
+        }
+    }
+    return NO;
+}
+
+static NSString *DYYYVideoDetailReferString(UIViewController *viewController) {
+    if (!viewController) {
+        return nil;
+    }
+
+    id value = nil;
+    @try {
+        value = [viewController valueForKey:@"referString"];
+    } @catch (__unused NSException *exception) {
+        return nil;
+    }
+    return [value isKindOfClass:[NSString class]] ? (NSString *)value : nil;
+}
+
+// 视频详情页是否由作者/个人主页进入。
+static BOOL DYYYVideoDetailComesFromUserProfile(UIViewController *viewController, BOOL *referStringMatched) {
+    if (referStringMatched) {
+        *referStringMatched = NO;
+    }
+    if (!viewController) {
+        return NO;
+    }
+
+    NSString *referString = [DYYYVideoDetailReferString(viewController) lowercaseString];
+    if (referString.length > 0) {
+        // 主页专属来源串；这些页面没有底栏，不能按首页那样减去一条 TabBar 高度。
+        if ([referString isEqualToString:@"personal_homepage"] || [referString isEqualToString:@"others_homepage"] ||
+            [referString isEqualToString:@"user_homepage"] || [referString isEqualToString:@"profile_homepage"] ||
+            [referString isEqualToString:@"profile"]) {
+            if (referStringMatched) {
+                *referStringMatched = YES;
+            }
+            return YES;
+        }
+
+        // 兜底：抖音改文案模板时会写成 xxx_homepage / xxx_profile 之类，
+        // 只要不是推荐流、搜索、私信等已知非主页来源，再按控制器链二次确认。
+        if ([referString containsString:@"homepage"] && ![referString isEqualToString:@"homepage_hot"]) {
+            return DYYYViewControllerChainContainsClassName(
+                viewController, @[ @"UserHome", @"UserProfile", @"ProfileViewController", @"ProfileHome" ]);
+        }
+        return NO;
+    }
+
+    return DYYYViewControllerChainContainsClassName(
+        viewController, @[ @"UserHome", @"UserProfile", @"ProfileViewController", @"ProfileHome" ]);
+}
+
+// 临时诊断日志：-viewDidLayoutSubviews: 每帧都会被调用，按时间戳限流。
+static void DYYYLogVideoDetailFullscreenDecision(UIViewController *viewController, NSString *source,
+                                                 BOOL useFullHeight, CGRect frame, CGFloat superviewHeight) {
+    static NSTimeInterval dyyyLastFullscreenLogTime = 0;
+    NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
+    if (now - dyyyLastFullscreenLogTime < 1.0) {
+        return;
+    }
+    dyyyLastFullscreenLogTime = now;
+
+    NSLog(@"[DYYY][ProfileFS] source=%@ vc=%@ refer=%@ superH=%.1f curH=%.1f fullH=%@ tabBar=%.1f",
+          source, NSStringFromClass([viewController class]), DYYYVideoDetailReferString(viewController) ?: @"(nil)",
+          superviewHeight, frame.size.height, useFullHeight ? @"YES" : @"NO", gCurrentTabBarHeight);
+}
+
+// 临时诊断日志：进入视频详情页时打一次完整控制器链，用来确认该页真实的 referString 与层级。
+static void DYYYLogVideoDetailContextOnce(UIViewController *viewController) {
+    static BOOL dyyyDidDumpVideoDetailContext = NO;
+    if (dyyyDidDumpVideoDetailContext) {
+        return;
+    }
+    dyyyDidDumpVideoDetailContext = YES;
+
+    NSMutableArray<NSString *> *chain = [NSMutableArray array];
+    for (UIViewController *current = viewController; current; current = current.parentViewController) {
+        [chain addObject:NSStringFromClass([current class])];
+    }
+
+    NSLog(@"[DYYY][ProfileFS] appear vc=%@ refer=%@ tabBar=%.1f viewH=%.1f superH=%.1f chain=%@",
+          NSStringFromClass([viewController class]), DYYYVideoDetailReferString(viewController) ?: @"(nil)", gCurrentTabBarHeight,
+          viewController.view.frame.size.height, viewController.view.superview.frame.size.height,
+          [chain componentsJoinedByString:@" > "]);
+
+    // 详情 table 的高度会被 -setFrame: 补到屏幕高的整数倍，这里一并记录，便于判断整页偏移来自哪一层。
+    UIView *probe = viewController.view.superview;
+    NSInteger depth = 0;
+    while (probe && depth < 8) {
+        if ([probe isKindOfClass:NSClassFromString(@"AWEAwemeDetailTableView")]) {
+            CGFloat screenHeight = [UIScreen mainScreen].bounds.size.height;
+            CGFloat remainder = screenHeight > 0 ? fmod(probe.frame.size.height, screenHeight) : 0;
+            NSLog(@"[DYYY][ProfileFS] table h=%.1f screenH=%.1f remainder=%.1f contentH=%.1f contentOffsetY=%.1f",
+                  probe.frame.size.height, screenHeight, remainder, [(UIScrollView *)probe contentSize].height,
+                  [(UIScrollView *)probe contentOffset].y);
+            break;
+        }
+        probe = probe.superview;
+        depth++;
+    }
 }
 
 static NSDictionary<NSString *, NSString *> *DYYYTopTabTitleMapping(void) {
@@ -16084,6 +16211,12 @@ static Class tabBarButtonClass = nil;
     DYYYScheduleCurrentAwemeTracking(self, self.model);
     DYYYEnsureFloatSpeedButton(self);
     reloadClearButtonConfiguration();
+
+    // 临时诊断：等这一帧布局落定后再打，才能看到真实 referString 与高度。
+    __weak AWEPlayInteractionViewController *dyyyLogWeakSelf = self;
+    dispatch_async(dispatch_get_main_queue(), ^{
+      DYYYLogVideoDetailContextOnce(dyyyLogWeakSelf);
+    });
 }
 
 - (void)setModel:(AWEAwemeModel *)model {
@@ -16159,6 +16292,11 @@ static Class tabBarButtonClass = nil;
                          [currentReferString isEqualToString:@"close_friends_moment"] || [currentReferString isEqualToString:@"offline_mode"] || [currentReferString isEqualToString:@"challenge"] ||
                          [currentReferString isEqualToString:@"general_search_scan"] || currentReferString == nil || isShowingRelatedMixViewController;
 
+    // 作者主页进入的视频详情页底部没有底栏，若仍按首页逻辑减去 gCurrentTabBarHeight，
+    // 视频只占「屏幕高 − 底栏高」，下方空出的一条会露出相邻 cell 的画面。
+    BOOL profileReferStringMatched = NO;
+    BOOL comesFromUserProfile = DYYYVideoDetailComesFromUserProfile(self, &profileReferStringMatched);
+
     if (!useFullHeight && [currentReferString isEqualToString:@"co_play_watch"]) {
         Class richContentVCClass = NSClassFromString(@"AWEFriendsImpl.RichContentNewListViewController");
         if (richContentVCClass && [directParentVC isKindOfClass:richContentVCClass]) {
@@ -16183,6 +16321,10 @@ static Class tabBarButtonClass = nil;
     } else {
         frame.size.height = superviewHeight - gCurrentTabBarHeight;
     }
+
+    DYYYLogVideoDetailFullscreenDecision(self,
+                                         profileReferStringMatched ? @"profile-refer" : (comesFromUserProfile ? @"profile-chain" : @"default"),
+                                         useFullHeight, frame, superviewHeight);
 
     if (fabs(frame.size.height - self.view.frame.size.height) > 0.5) {
         self.view.frame = frame;

@@ -1,3 +1,5 @@
 .theos
 packages
 .DS_Store
+.local-ssh/
+.local-verify/
