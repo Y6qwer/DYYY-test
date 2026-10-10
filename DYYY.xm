@@ -16369,6 +16369,7 @@ static Class tabBarButtonClass = nil;
 
     CGRect frame = self.view.frame;
     CGFloat screenWidth = [UIScreen mainScreen].bounds.size.width;
+    CGFloat screenHeight = [UIScreen mainScreen].bounds.size.height;
     CGFloat superviewHeight = self.view.superview.frame.size.height;
 
     if (frame.size.width != screenWidth && frame.size.height < superviewHeight) {
@@ -16414,15 +16415,24 @@ static Class tabBarButtonClass = nil;
         useFullHeight = YES;
     }
 
+    // 作者主页进入的视频详情页底部没有底栏：容器高度被算成「屏幕高 − 底栏高」（实测 926−83=843），
+    // 而 AWEAwemeDetailTableView 的 setFrame 会把表格高度补到屏幕高的整数倍。
+    // 两者不一致时，视频画面只铺到 843，底部就露出相邻 cell 的画面。
+    // 因此主页场景按屏幕高铺满，但绝不小于容器高度。
+    CGFloat fullscreenHeight = superviewHeight;
+    if (comesFromUserProfile) {
+        fullscreenHeight = MAX(superviewHeight, screenHeight);
+    }
+
     if (useFullHeight) {
-        frame.size.height = superviewHeight;
+        frame.size.height = fullscreenHeight;
     } else {
         frame.size.height = superviewHeight - gCurrentTabBarHeight;
     }
 
     DYYYUpdateFullscreenDiagnostic(self,
                                    profileReferStringMatched ? @"END-profile-refer" : (comesFromUserProfile ? @"END-profile-chain" : @"END-default"),
-                                   useFullHeight, frame, superviewHeight);
+                                   useFullHeight, frame, fullscreenHeight);
 
     if (fabs(frame.size.height - self.view.frame.size.height) > 0.5) {
         self.view.frame = frame;
