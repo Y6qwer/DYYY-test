@@ -466,7 +466,10 @@ static NSDictionary<NSString *, NSString *> *DYYYTopTabTitleMapping(void) {
 // 链上，所以必须同时查导航栈，否则判断永远不命中（历史版本用 UserHome/UserProfile 匹配，
 // 从未生效）。这类页面结构与首页不同：「启用首页全屏」那套排版改动只适用于首页，
 // 在主页上会导致裁剪窗口与 cell 高度不一致而露出相邻作品，因此主页一律跳过全屏排版。
-static BOOL DYYYViewIsInUserProfileContext(UIView *view) {
+// 立即查询：parentViewController 链 + 导航栈里是否有作者/个人主页控制器。
+// 注意：导航栈在页面早期可能尚未建立，所以这个即时查询结果会随时序变化，
+// 不能单独用于 setFrame: 这类会被提前调用的热路径（见下方缓存版本）。
+static BOOL DYYYLiveCheckUserProfileContext(UIView *view) {
     if (!view) {
         return NO;
     }
@@ -496,6 +499,28 @@ static BOOL DYYYViewIsInUserProfileContext(UIView *view) {
     return NO;
 }
 
+// 「当前在作者主页」的结论缓存。
+// setFrame: 等热路径会在导航栈建立之前就被调用，那时即时查询必然得到 NO，全屏排版
+// 就会照常执行（这正是此前加了守卫仍无效的原因）。因此把「栈已建立时」得到的结论
+// 记下来并带时间戳，热路径优先使用不早于本次调用时刻的缓存值。
+static BOOL gDYYYProfileContextCached = NO;
+static NSTimeInterval gDYYYProfileContextCachedAt = 0.0;
+
+// 在布局阶段（导航栈已完整）调用：记录结论，供随后的 setFrame: 使用。
+static void DYYYUpdateUserProfileContextCache(UIView *view) {
+    gDYYYProfileContextCached = DYYYLiveCheckUserProfileContext(view);
+    gDYYYProfileContextCachedAt = [NSDate timeIntervalSinceReferenceDate];
+}
+
+// 热路径使用：缓存比本次调用时刻更早，说明它是当前这次布局得到的结论，可直接采用。
+static BOOL DYYYViewIsInUserProfileContext(UIView *view) {
+    NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
+    if (gDYYYProfileContextCachedAt > 0.0 && gDYYYProfileContextCachedAt <= now) {
+        return gDYYYProfileContextCached;
+    }
+    return DYYYLiveCheckUserProfileContext(view);
+}
+
 // 临时诊断：把作者主页的真实控制器链显示在屏幕顶部的独立窗口里，便于截图确认类名。
 // 确认完成后整段删除（连同调用点）。
 static void DYYYShowViewControllerChainDiagnostic(UIView *anchorView) {
@@ -522,9 +547,13 @@ static void DYYYShowViewControllerChainDiagnostic(UIView *anchorView) {
     }
 
     NSMutableString *text = [NSMutableString string];
-    [text appendFormat:@"vcChain count=%lu  guardMatch=%d\n",
+    [text appendFormat:@"vcChain count=%lu\nliveMatch=%d  cachedMatch=%d (cacheAge=%.1fs)\n",
                        (unsigned long)chain.count,
-                       DYYYViewIsInUserProfileContext(anchorView) ? 1 : 0];
+                       DYYYLiveCheckUserProfileContext(anchorView) ? 1 : 0,
+                       gDYYYProfileContextCached ? 1 : 0,
+                       gDYYYProfileContextCachedAt > 0.0
+                           ? [NSDate timeIntervalSinceReferenceDate] - gDYYYProfileContextCachedAt
+                           : -1.0];
     for (NSUInteger index = 0; index < chain.count; index++) {
         [text appendFormat:@"%lu: %@\n", (unsigned long)index, chain[index]];
     }
@@ -16220,6 +16249,10 @@ static Class tabBarButtonClass = nil;
         return;
     }
 
+    // 布局阶段导航栈已完整：先把「是否在作者主页」的结论记入缓存，
+    // 随后 setFrame: 等提前调用的热路径就能用上这个结论。
+    DYYYUpdateUserProfileContextCache(self.view);
+
     // 临时诊断：把当前页的控制器链打到屏幕上（1 秒限流），用于确认主页类名。
     {
         static NSTimeInterval dyyyLastChainLogTime = 0;
@@ -16231,7 +16264,7 @@ static Class tabBarButtonClass = nil;
     }
 
     // 作者/个人主页保持抖音默认排版，不介入全屏（该页容器结构与首页不同）。
-    if (DYYYViewIsInUserProfileContext(self.view)) {
+    if (gDYYYProfileContextCached) {
         return;
     }
 
