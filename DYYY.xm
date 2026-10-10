@@ -505,18 +505,34 @@ static BOOL DYYYLiveCheckUserProfileContext(UIView *view) {
 // 记下来并带时间戳，热路径优先使用不早于本次调用时刻的缓存值。
 static BOOL gDYYYProfileContextCached = NO;
 static NSTimeInterval gDYYYProfileContextCachedAt = 0.0;
+static NSTimeInterval gDYYYProfileContextLiveCheckAt = 0.0;
 
 // 在布局阶段（导航栈已完整）调用：记录结论，供随后的 setFrame: 使用。
 static void DYYYUpdateUserProfileContextCache(UIView *view) {
     gDYYYProfileContextCached = DYYYLiveCheckUserProfileContext(view);
     gDYYYProfileContextCachedAt = [NSDate timeIntervalSinceReferenceDate];
+    gDYYYProfileContextLiveCheckAt = gDYYYProfileContextCachedAt;
 }
 
 // 热路径使用：缓存比本次调用时刻更早，说明它是当前这次布局得到的结论，可直接采用。
+// 兜底：若缓存是在「导航栈尚未建立」时写入的 NO，而此刻实时判定为 YES，说明缓存过旧，
+// 立即以实时结论覆盖并应用于本帧，避免首帧按首页处理导致的错位。
+// 该兜底会做响应链回溯，因此按时间门控（首页恒为 NO，不必每个视图都重算）。
 static BOOL DYYYViewIsInUserProfileContext(UIView *view) {
     NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
     if (gDYYYProfileContextCachedAt > 0.0 && gDYYYProfileContextCachedAt <= now) {
-        return gDYYYProfileContextCached;
+        if (gDYYYProfileContextCached) {
+            return YES;
+        }
+        if (now - gDYYYProfileContextLiveCheckAt >= 0.25) {
+            gDYYYProfileContextLiveCheckAt = now;
+            if (DYYYLiveCheckUserProfileContext(view)) {
+                gDYYYProfileContextCached = YES;
+                gDYYYProfileContextCachedAt = now;
+                return YES;
+            }
+        }
+        return NO;
     }
     return DYYYLiveCheckUserProfileContext(view);
 }
@@ -16213,6 +16229,10 @@ static Class tabBarButtonClass = nil;
 
 - (void)viewWillAppear:(BOOL)animated {
     %orig;
+    // 在 -viewDidLayoutSubviews（进而 setFrame:）之前就把「是否在作者主页」的结论备好，
+    // 否则第一次打开详情页时缓存还是上一页的旧结论，首帧会按首页处理、画面出现错位，
+    // 关闭重开才会正常（这正是「打开是坏的，重开就好」的原因）。
+    DYYYUpdateUserProfileContextCache(self.view);
     dyyyInteractionViewVisible = YES;
     dyyyActivePlaybackInteractionController = self;
     DYYYScheduleCurrentAwemeTracking(self, self.model);
