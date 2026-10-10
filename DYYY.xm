@@ -458,7 +458,7 @@ static NSString *DYYYVideoDetailReferString(UIViewController *viewController) {
     return [value isKindOfClass:[NSString class]] ? (NSString *)value : nil;
 }
 
-// 视频详情页是否由作者/个人主页进入。
+// 视频详情页是否由作者/个人主页进入。referStringMatched 可为 NULL。
 static BOOL DYYYVideoDetailComesFromUserProfile(UIViewController *viewController, BOOL *referStringMatched) {
     if (referStringMatched) {
         *referStringMatched = NO;
@@ -16264,8 +16264,7 @@ static Class tabBarButtonClass = nil;
 
     // 作者主页进入的视频详情页底部没有底栏，若仍按首页逻辑减去 gCurrentTabBarHeight，
     // 视频只占「屏幕高 − 底栏高」，下方空出的一条会露出相邻 cell 的画面。
-    BOOL profileReferStringMatched = NO;
-    BOOL comesFromUserProfile = DYYYVideoDetailComesFromUserProfile(self, &profileReferStringMatched);
+    BOOL comesFromUserProfile = DYYYVideoDetailComesFromUserProfile(self, NULL);
 
     if (!useFullHeight && [currentReferString isEqualToString:@"co_play_watch"]) {
         Class richContentVCClass = NSClassFromString(@"AWEFriendsImpl.RichContentNewListViewController");
