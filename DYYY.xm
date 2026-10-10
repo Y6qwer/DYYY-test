@@ -492,19 +492,65 @@ static BOOL DYYYVideoDetailComesFromUserProfile(UIViewController *viewController
         viewController, @[ @"UserHome", @"UserProfile", @"ProfileViewController", @"ProfileHome" ]);
 }
 
-// 临时诊断日志：-viewDidLayoutSubviews: 每帧都会被调用，按时间戳限流。
-static void DYYYLogVideoDetailFullscreenDecision(UIViewController *viewController, NSString *source,
-                                                 BOOL useFullHeight, CGRect frame, CGFloat superviewHeight) {
-    static NSTimeInterval dyyyLastFullscreenLogTime = 0;
-    NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
-    if (now - dyyyLastFullscreenLogTime < 1.0) {
+// 临时诊断：把实测数值直接打到屏幕顶部的独立窗口里（层级高于宿主界面，不会被底栏遮住），
+// 这样无需连接日志工具，截图即可。定位完成后整段删除。
+static void DYYYUpdateFullscreenDiagnostic(UIViewController *viewController, NSString *source,
+                                           BOOL useFullHeight, CGRect frame, CGFloat superviewHeight) {
+    static UIWindow *dyyyDiagnosticWindow = nil;
+    static UILabel *dyyyDiagnosticLabel = nil;
+    static __weak UIViewController *dyyyDiagnosticOwner = nil;
+
+    if (!viewController) {
         return;
     }
-    dyyyLastFullscreenLogTime = now;
+    // 详情页与其它页面共用本 hook；只在切换页面时重建，避免每帧刷新。
+    if (dyyyDiagnosticOwner != viewController) {
+        dyyyDiagnosticOwner = viewController;
+        if (!dyyyDiagnosticWindow) {
+            dyyyDiagnosticWindow = [[UIWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
+            dyyyDiagnosticWindow.windowLevel = UIWindowLevelAlert + 100.0;
+            dyyyDiagnosticWindow.backgroundColor = [UIColor clearColor];
+            dyyyDiagnosticWindow.userInteractionEnabled = NO;
+            dyyyDiagnosticLabel = [[UILabel alloc] initWithFrame:CGRectZero];
+            dyyyDiagnosticLabel.numberOfLines = 0;
+            dyyyDiagnosticLabel.font = [UIFont monospacedSystemFontOfSize:11.0 weight:UIFontWeightBold];
+            dyyyDiagnosticLabel.textColor = [UIColor yellowColor];
+            dyyyDiagnosticLabel.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.75];
+            [dyyyDiagnosticWindow addSubview:dyyyDiagnosticLabel];
+            dyyyDiagnosticWindow.hidden = NO;
+        }
+    }
+    if (!dyyyDiagnosticWindow || !dyyyDiagnosticLabel) {
+        return;
+    }
 
-    NSLog(@"[DYYY][ProfileFS] source=%@ vc=%@ refer=%@ superH=%.1f curH=%.1f fullH=%@ tabBar=%.1f",
-          source, NSStringFromClass([viewController class]), DYYYVideoDetailReferString(viewController) ?: @"(nil)",
-          superviewHeight, frame.size.height, useFullHeight ? @"YES" : @"NO", gCurrentTabBarHeight);
+    CGFloat screenHeight = [UIScreen mainScreen].bounds.size.height;
+    NSString *tableText = @"table=(none)";
+    UIView *probe = viewController.view.superview;
+    NSInteger depth = 0;
+    while (probe && depth < 8) {
+        if ([probe isKindOfClass:NSClassFromString(@"AWEAwemeDetailTableView")]) {
+            tableText = [NSString stringWithFormat:@"table y=%.1f h=%.1f off=%.1f",
+                                                   probe.frame.origin.y, probe.frame.size.height,
+                                                   [(UIScrollView *)probe contentOffset].y];
+            break;
+        }
+        probe = probe.superview;
+        depth++;
+    }
+
+    NSString *text = [NSString stringWithFormat:
+                                   @"source=%@\nrefer=%@\nfullH=%@\nscreen=%.1f  superH=%.1f\ncurH=%.1f  tabBar=%.1f\nparent=%.1f  insetB=%.1f\n%@",
+                                   source, DYYYVideoDetailReferString(viewController) ?: @"(nil)",
+                                   useFullHeight ? @"YES" : @"NO", screenHeight, superviewHeight,
+                                   frame.size.height, gCurrentTabBarHeight,
+                                   viewController.view.superview ? viewController.view.superview.frame.size.height : -1.0,
+                                   viewController.view.window.safeAreaInsets.bottom, tableText];
+    dyyyDiagnosticLabel.text = text;
+    CGSize fit = [dyyyDiagnosticLabel sizeThatFits:CGSizeMake(dyyyDiagnosticWindow.bounds.size.width - 16.0, CGFLOAT_MAX)];
+    CGFloat labelWidth = dyyyDiagnosticWindow.bounds.size.width - 16.0;
+    dyyyDiagnosticLabel.frame = CGRectMake(8.0, 60.0, labelWidth, fit.height + 8.0);
+    dyyyDiagnosticWindow.hidden = NO;
 }
 
 // 临时诊断日志：进入视频详情页时打一次完整控制器链，用来确认该页真实的 referString 与层级。
@@ -16339,9 +16385,9 @@ static Class tabBarButtonClass = nil;
         frame.size.height = superviewHeight - gCurrentTabBarHeight;
     }
 
-    DYYYLogVideoDetailFullscreenDecision(self,
-                                         profileReferStringMatched ? @"profile-refer" : (comesFromUserProfile ? @"profile-chain" : @"default"),
-                                         useFullHeight, frame, superviewHeight);
+    DYYYUpdateFullscreenDiagnostic(self,
+                                   profileReferStringMatched ? @"profile-refer" : (comesFromUserProfile ? @"profile-chain" : @"default"),
+                                   useFullHeight, frame, superviewHeight);
 
     if (fabs(frame.size.height - self.view.frame.size.height) > 0.5) {
         self.view.frame = frame;
