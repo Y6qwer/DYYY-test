@@ -16382,6 +16382,13 @@ static Class tabBarButtonClass = nil;
         }
     }
 
+    // 作者主页进入的视频详情页底部没有底栏，若仍按首页逻辑减去 gCurrentTabBarHeight，
+    // 视频只占「屏幕高 − 底栏高」，顶部留出黑边且下方露出相邻 cell 的画面。
+    // 注意：这里必须真正把 useFullHeight 置为 YES，只做判定不赋值是无效的。
+    if (!useFullHeight && comesFromUserProfile) {
+        useFullHeight = YES;
+    }
+
     if (useFullHeight) {
         frame.size.height = superviewHeight;
     } else {
