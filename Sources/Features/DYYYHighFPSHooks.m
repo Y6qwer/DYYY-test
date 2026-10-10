@@ -434,12 +434,22 @@ void DYYYStartHighFPSHooks(void) {
     DYYYInstallCFBundleProMotionHookIfNeeded();
     DYYYInstallLoadObserversIfNeeded();
 
-    if (DYYYHighFPSEnabled()) {
-        DYYYApplyHighFPSSettingChange(YES);
-    } else {
-        DYYYCaptureDiskProMotionKeyIfNeeded();
-        NSLog(@"[DYYY][RuntimeHook][HighFPS] 已就绪（默认关闭），diskOriginal ProMotion=%d", gDYYYProMotionDiskKeyValue);
-    }
+    // 这里由 %ctor 在 dyld 初始化阶段调用，此时不能做任何 bundle / plist 磁盘 I/O。
+    // 原实现在这一阶段直接读宿主 Info.plist（dictionaryWithContentsOfFile:），
+    // 曾以 EXC_BAD_ACCESS/SIGBUS 在 +[NSDictionary allocWithZone:] 崩溃（加载未完成即被杀）。
+    // 改为挂到主队列，等初始化结束后再按设置生效；observer 已在上面注册，时机不变。
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+      dispatch_async(dispatch_get_main_queue(), ^{
+        if (DYYYHighFPSEnabled()) {
+            DYYYApplyHighFPSSettingChange(YES);
+        } else {
+            DYYYCaptureDiskProMotionKeyIfNeeded();
+            NSLog(@"[DYYY][RuntimeHook][HighFPS] 已就绪（默认关闭），diskOriginal ProMotion=%d",
+                  gDYYYProMotionDiskKeyValue);
+        }
+      });
+    });
 
     [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidBecomeActiveNotification
                                                       object:nil
