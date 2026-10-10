@@ -492,6 +492,31 @@ static BOOL DYYYVideoDetailComesFromUserProfile(UIViewController *viewController
         viewController, @[ @"UserHome", @"UserProfile", @"ProfileViewController", @"ProfileHome" ]);
 }
 
+// 临时诊断：列出窗口里所有可见的滚动容器（跳过诊断浮窗自身），用于找出被挪动 83pt 的那一层。
+static void DYYYCollectScrollViews(UIView *view, NSMutableString *out, NSInteger depth, NSInteger *budget) {
+    if (!view || depth > 30 || *budget <= 0) {
+        return;
+    }
+    *budget -= 1;
+
+    BOOL interesting = [view isKindOfClass:[UIScrollView class]] ||
+                       [view isKindOfClass:[UITableView class]] ||
+                       [view isKindOfClass:[UICollectionView class]];
+    if (interesting) {
+        NSString *className = NSStringFromClass([view class]);
+        // 只报占屏比例大的容器，避免被小控件刷屏。
+        if (view.frame.size.height > 300.0 || view.frame.size.width > 300.0) {
+            UIScrollView *scrollView = [view isKindOfClass:[UIScrollView class]] ? (UIScrollView *)view : nil;
+            [out appendFormat:@"%@\n   y=%.0f h=%.0f w=%.0f off=%.0f\n",
+                              className, view.frame.origin.y, view.frame.size.height,
+                              view.frame.size.width, scrollView ? scrollView.contentOffset.y : -1.0];
+        }
+    }
+    for (UIView *subview in view.subviews) {
+        DYYYCollectScrollViews(subview, out, depth + 1, budget);
+    }
+}
+
 // 临时诊断：把实测数值直接打到屏幕顶部的独立窗口里（层级高于宿主界面，不会被底栏遮住），
 // 这样无需连接日志工具，截图即可。定位完成后整段删除。
 static void DYYYUpdateFullscreenDiagnostic(UIViewController *viewController, NSString *source,
@@ -525,28 +550,28 @@ static void DYYYUpdateFullscreenDiagnostic(UIViewController *viewController, NSS
     }
 
     CGFloat screenHeight = [UIScreen mainScreen].bounds.size.height;
-    NSString *tableText = @"table=(none)";
-    UIView *probe = viewController.view.superview;
-    NSInteger depth = 0;
-    while (probe && depth < 8) {
-        if ([probe isKindOfClass:NSClassFromString(@"AWEAwemeDetailTableView")]) {
-            tableText = [NSString stringWithFormat:@"table y=%.1f h=%.1f off=%.1f",
-                                                   probe.frame.origin.y, probe.frame.size.height,
-                                                   [(UIScrollView *)probe contentOffset].y];
-            break;
+    // 把窗口里所有可见的滚动容器列出来：高度 843 的那个才是真正被挪动的目标。
+    NSMutableString *scrollText = [NSMutableString string];
+    NSArray<UIWindow *> *windows = [UIApplication sharedApplication].windows;
+    for (UIWindow *candidateWindow in windows) {
+        if (candidateWindow.hidden || candidateWindow.alpha < 0.01 || candidateWindow == dyyyDiagnosticWindow) {
+            continue;
         }
-        probe = probe.superview;
-        depth++;
+        NSInteger budget = 400;
+        DYYYCollectScrollViews(candidateWindow, scrollText, 0, &budget);
+    }
+    if (scrollText.length == 0) {
+        [scrollText appendString:@"(no scroll view)"];
     }
 
     NSString *text = [NSString stringWithFormat:
-                                   @"source=%@\nrefer=%@\nfullH=%@\nscreen=%.1f  superH=%.1f\ncurH=%.1f  tabBar=%.1f\nframe w=%.1f  x=%.1f  y=%.1f\nparent=%.1f  insetB=%.1f\n%@",
+                                   @"source=%@\nrefer=%@\nfullH=%@\nscreen=%.1f  superH=%.1f\ncurH=%.1f  tabBar=%.1f\nframe w=%.1f  x=%.1f  y=%.1f\nparent=%.1f  insetB=%.1f\n--- scroll views ---\n%@",
                                    source, DYYYVideoDetailReferString(viewController) ?: @"(nil)",
                                    useFullHeight ? @"YES" : @"NO", screenHeight, superviewHeight,
                                    frame.size.height, gCurrentTabBarHeight,
                                    frame.size.width, frame.origin.x, frame.origin.y,
                                    viewController.view.superview ? viewController.view.superview.frame.size.height : -1.0,
-                                   viewController.view.window.safeAreaInsets.bottom, tableText];
+                                   viewController.view.window.safeAreaInsets.bottom, scrollText];
     dyyyDiagnosticLabel.text = text;
     CGSize fit = [dyyyDiagnosticLabel sizeThatFits:CGSizeMake(dyyyDiagnosticWindow.bounds.size.width - 16.0, CGFLOAT_MAX)];
     CGFloat labelWidth = dyyyDiagnosticWindow.bounds.size.width - 16.0;
