@@ -561,6 +561,38 @@ static void DYYYNoteDetailTableLayout(CGFloat height) {
     gDYYYTableLastHeight = height;
 }
 
+// 临时诊断：列出「关键几层」的几何信息（默认只保留最有解释力的类），避免清单过长被截断。
+static void DYYYCollectInterestingViews(UIView *view, NSMutableString *out, NSInteger depth, NSInteger *budget) {
+    if (!view || depth > 30 || *budget <= 0) {
+        return;
+    }
+    *budget -= 1;
+
+    static NSArray<NSString *> *interestingClasses = nil;
+    if (!interestingClasses) {
+        interestingClasses = @[
+            @"AWEAwemeDetailTableView", @"AWEAwemeDetailTableViewCell", @"TTPLayerView",
+            @"TTMetalViewVP", @"AWEStoryContainerCollectionView", @"LivePhotoContentAdapt",
+            @"AWEPlayInteractionView", @"AWEDPlayer", @"AWEAwemePlayVideo"
+        ];
+    }
+
+    CGFloat height = view.frame.size.height;
+    if (height > 600.0) {
+        NSString *className = NSStringFromClass([view class]);
+        for (NSString *interesting in interestingClasses) {
+            if ([className containsString:interesting]) {
+                NSString *shortName = className.length > 46 ? [className substringToIndex:46] : className;
+                [out appendFormat:@"%@ h=%.0f y=%.0f\n", shortName, height, view.frame.origin.y];
+                break;
+            }
+        }
+    }
+    for (UIView *subview in view.subviews) {
+        DYYYCollectInterestingViews(subview, out, depth + 1, budget);
+    }
+}
+
 // 临时诊断：按类名前缀找一个视图（用于定位真正的视频渲染层）。
 static UIView *DYYYFindFirstViewWithClassPrefix(UIView *view, NSString *prefix) {
     if (!view) {
@@ -658,20 +690,18 @@ static void DYYYUpdateFullscreenDiagnostic(UIViewController *viewController, NSS
         [scrollText appendString:@"(player view not found)\n"];
     }
     if (scanWindow) {
-        [scrollText appendString:@"=== large views (h>600) ===\n"];
+        [scrollText appendString:@"-- key layers --\n"];
         NSInteger budget = 3000;
-        NSInteger count = 0;
-        DYYYCollectLargeViews(scanWindow, scrollText, 0, &budget, &count);
+        DYYYCollectInterestingViews(scanWindow, scrollText, 0, &budget);
     }
     if (scrollText.length == 0) {
         [scrollText appendString:@"(no large view)"];
     }
 
     NSString *text = [NSString stringWithFormat:
-                                   @"scr=%.0f ctrlH=%.0f tab=%.0f full=%@\ntblTick=%d tblLastH=%.0f\n=== player view chain ===\n%@",
-                                   screenHeight, frame.size.height, gCurrentTabBarHeight,
-                                   useFullHeight ? @"Y" : @"N",
-                                   (int)gDYYYTableLayoutTick, gDYYYTableLastHeight, scrollText];
+                                   @"tblTick=%d tblLastH=%.0f ctrlH=%.0f scr=%.0f tab=%.0f\n%@",
+                                   (int)gDYYYTableLayoutTick, gDYYYTableLastHeight,
+                                   frame.size.height, screenHeight, gCurrentTabBarHeight, scrollText];
     dyyyDiagnosticLabel.text = text;
     CGSize fit = [dyyyDiagnosticLabel sizeThatFits:CGSizeMake(dyyyDiagnosticWindow.bounds.size.width - 16.0, CGFLOAT_MAX)];
     CGFloat labelWidth = dyyyDiagnosticWindow.bounds.size.width - 16.0;
@@ -17580,6 +17610,26 @@ static void DYYYRemoveAppLifecycleObservers(void) {
 
     CGRect frame = self.frame;
     if (frame.size.height < screenHeight) {
+        // 终极修法：宿主对表格高度施加了 Auto Layout 约束，单纯改 frame 会被约束系统
+        // 立刻还原（这是此前多轮修改都无效的根本原因）。这里把「固定高度」类约束拆掉，
+        // 再直接设定 frame——没有约束约束它，高度就稳定在整屏。
+        NSMutableArray<NSLayoutConstraint *> *heightConstraints = [NSMutableArray array];
+        for (NSLayoutConstraint *constraint in self.constraints) {
+            if (constraint.firstItem != self && constraint.secondItem != self) {
+                continue;
+            }
+            if (constraint.firstAttribute == NSLayoutAttributeHeight ||
+                constraint.secondAttribute == NSLayoutAttributeHeight) {
+                // 只拆固定高度（两个属性都是 height 且无第二项），不碰相对父视图的比例/间距约束。
+                if (constraint.secondItem == nil) {
+                    [heightConstraints addObject:constraint];
+                }
+            }
+        }
+        if (heightConstraints.count > 0) {
+            [self removeConstraints:heightConstraints];
+        }
+
         frame.size.height = screenHeight;
         self.frame = frame;
     }
