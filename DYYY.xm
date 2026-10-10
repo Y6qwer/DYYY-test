@@ -537,56 +537,6 @@ static BOOL DYYYViewIsInUserProfileContext(UIView *view) {
     return DYYYLiveCheckUserProfileContext(view);
 }
 
-// 临时诊断：把作者主页的真实控制器链显示在屏幕顶部的独立窗口里，便于截图确认类名。
-// 确认完成后整段删除（连同调用点）。
-static void DYYYShowViewControllerChainDiagnostic(UIView *anchorView) {
-    static UIWindow *dyyyChainWindow = nil;
-    static UILabel *dyyyChainLabel = nil;
-
-    UIViewController *viewController = [DYYYUtils firstAvailableViewControllerFromView:anchorView];
-    NSMutableArray<NSString *> *chain = [NSMutableArray array];
-    for (UIViewController *current = viewController; current; current = current.parentViewController) {
-        [chain addObject:NSStringFromClass([current class])];
-    }
-
-    if (!dyyyChainWindow) {
-        dyyyChainWindow = [[UIWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
-        dyyyChainWindow.windowLevel = UIWindowLevelAlert + 100.0;
-        dyyyChainWindow.backgroundColor = [UIColor clearColor];
-        dyyyChainWindow.userInteractionEnabled = NO;
-        dyyyChainLabel = [[UILabel alloc] initWithFrame:CGRectZero];
-        dyyyChainLabel.numberOfLines = 0;
-        dyyyChainLabel.font = [UIFont monospacedSystemFontOfSize:11.0 weight:UIFontWeightBold];
-        dyyyChainLabel.textColor = [UIColor yellowColor];
-        dyyyChainLabel.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.78];
-        [dyyyChainWindow addSubview:dyyyChainLabel];
-    }
-
-    NSMutableString *text = [NSMutableString string];
-    [text appendFormat:@"vcChain count=%lu\nliveMatch=%d  cachedMatch=%d (cacheAge=%.1fs)\n",
-                       (unsigned long)chain.count,
-                       DYYYLiveCheckUserProfileContext(anchorView) ? 1 : 0,
-                       gDYYYProfileContextCached ? 1 : 0,
-                       gDYYYProfileContextCachedAt > 0.0
-                           ? [NSDate timeIntervalSinceReferenceDate] - gDYYYProfileContextCachedAt
-                           : -1.0];
-    for (NSUInteger index = 0; index < chain.count; index++) {
-        [text appendFormat:@"%lu: %@\n", (unsigned long)index, chain[index]];
-    }
-    if (viewController) {
-        [text appendFormat:@"navStack:\n"];
-        for (UIViewController *item in viewController.navigationController.viewControllers) {
-            [text appendFormat:@"  %@\n", NSStringFromClass([item class])];
-        }
-    }
-
-    dyyyChainLabel.text = text;
-    CGFloat width = dyyyChainWindow.bounds.size.width - 16.0;
-    CGSize fit = [dyyyChainLabel sizeThatFits:CGSizeMake(width, CGFLOAT_MAX)];
-    dyyyChainLabel.frame = CGRectMake(8.0, 56.0, width, fit.height + 8.0);
-    dyyyChainWindow.hidden = NO;
-}
-
 static NSString *DYYYCustomAssetsDirectory(void) {
     static NSString *customDirectory = nil;
     static dispatch_once_t onceToken;
@@ -16272,16 +16222,6 @@ static Class tabBarButtonClass = nil;
     // 布局阶段导航栈已完整：先把「是否在作者主页」的结论记入缓存，
     // 随后 setFrame: 等提前调用的热路径就能用上这个结论。
     DYYYUpdateUserProfileContextCache(self.view);
-
-    // 临时诊断：把当前页的控制器链打到屏幕上（1 秒限流），用于确认主页类名。
-    {
-        static NSTimeInterval dyyyLastChainLogTime = 0;
-        NSTimeInterval chainNow = [NSDate timeIntervalSinceReferenceDate];
-        if (chainNow - dyyyLastChainLogTime >= 1.0) {
-            dyyyLastChainLogTime = chainNow;
-            DYYYShowViewControllerChainDiagnostic(self.view);
-        }
-    }
 
     // 作者/个人主页保持抖音默认排版，不介入全屏（该页容器结构与首页不同）。
     if (gDYYYProfileContextCached) {
