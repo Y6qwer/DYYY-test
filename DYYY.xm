@@ -552,6 +552,45 @@ static void DYYYCollectScrollViews(UIView *view, NSMutableString *out, NSInteger
     }
 }
 
+// 临时诊断：按类名前缀找一个视图（用于定位真正的视频渲染层）。
+static UIView *DYYYFindFirstViewWithClassPrefix(UIView *view, NSString *prefix) {
+    if (!view) {
+        return nil;
+    }
+    NSString *className = NSStringFromClass([view class]);
+    if (className.length > 0 && [className hasPrefix:prefix]) {
+        return view;
+    }
+    for (UIView *subview in view.subviews) {
+        UIView *found = DYYYFindFirstViewWithClassPrefix(subview, prefix);
+        if (found) {
+            return found;
+        }
+    }
+    return nil;
+}
+
+// 临时诊断：沿父视图链打印每层的 frame / bounds / center / transform。
+// 关键判据：若某层 frame ≠ bounds，说明存在 transform，改 frame 高度是无效的。
+static void DYYYCollectGeometryChain(UIView *view, NSMutableString *out, NSInteger levels) {
+    UIView *current = view;
+    for (NSInteger index = 0; current && index < levels; index++) {
+        CGRect frame = current.frame;
+        CGRect bounds = current.bounds;
+        CGAffineTransform transform = current.transform;
+        BOOL scaled = !CGAffineTransformIsIdentity(transform);
+        NSString *className = NSStringFromClass([current class]);
+        if (className.length > 40) {
+            className = [className substringToIndex:40];
+        }
+        [out appendFormat:@"%@ f=%.0fx%.0f@%.0f,%.0f b=%.0fx%.0f c=%.0f,%.0f t=%@\n",
+                          className, frame.size.width, frame.size.height, frame.origin.x, frame.origin.y,
+                          bounds.size.width, bounds.size.height, current.center.x, current.center.y,
+                          scaled ? @"NON-IDENTITY" : @"-"];
+        current = current.superview;
+    }
+}
+
 // 临时诊断：把实测数值直接打到屏幕顶部的独立窗口里（层级高于宿主界面，不会被底栏遮住），
 // 这样无需连接日志工具，截图即可。定位完成后整段删除。
 static void DYYYUpdateFullscreenDiagnostic(UIViewController *viewController, NSString *source,
@@ -585,16 +624,35 @@ static void DYYYUpdateFullscreenDiagnostic(UIViewController *viewController, NSS
     }
 
     CGFloat screenHeight = [UIScreen mainScreen].bounds.size.height;
-    // 把窗口里所有可见的滚动容器列出来：高度 843 的那个才是真正被挪动的目标。
+    // 找出真正的视频渲染层，并沿父链打印几何信息（frame/bounds/center/transform）。
     NSMutableString *scrollText = [NSMutableString string];
     NSArray<UIWindow *> *windows = [UIApplication sharedApplication].windows;
+    UIView *playerView = nil;
+    UIView *scanWindow = nil;
     for (UIWindow *candidateWindow in windows) {
         if (candidateWindow.hidden || candidateWindow.alpha < 0.01 || candidateWindow == dyyyDiagnosticWindow) {
             continue;
         }
+        scanWindow = candidateWindow;
+        playerView = DYYYFindFirstViewWithClassPrefix(candidateWindow, @"TTPLayerView");
+        if (!playerView) {
+            playerView = DYYYFindFirstViewWithClassPrefix(candidateWindow, @"TTMetalViewVP");
+        }
+        if (playerView) {
+            break;
+        }
+    }
+    if (playerView) {
+        [scrollText appendString:@"=== player view chain ===\n"];
+        DYYYCollectGeometryChain(playerView, scrollText, 8);
+    } else {
+        [scrollText appendString:@"(player view not found)\n"];
+    }
+    if (scanWindow) {
+        [scrollText appendString:@"=== large views (h>600) ===\n"];
         NSInteger budget = 3000;
         NSInteger count = 0;
-        DYYYCollectLargeViews(candidateWindow, scrollText, 0, &budget, &count);
+        DYYYCollectLargeViews(scanWindow, scrollText, 0, &budget, &count);
     }
     if (scrollText.length == 0) {
         [scrollText appendString:@"(no large view)"];
