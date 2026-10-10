@@ -500,25 +500,55 @@ static BOOL DYYYLiveCheckUserProfileContext(UIView *view) {
 }
 
 // 「当前在作者主页」的结论缓存。
-// setFrame: 等热路径会在导航栈建立之前就被调用，那时即时查询必然得到 NO，全屏排版
-// 就会照常执行（这正是此前加了守卫仍无效的原因）。因此把「栈已建立时」得到的结论
-// 记下来并带时间戳，热路径优先使用不早于本次调用时刻的缓存值。
+//
+// 背景：setFrame: 等热路径会在导航栈建立之前就被调用，那时即时查询必然得到 NO，
+// 全屏排版就会照常执行（这是此前加了守卫仍无效的原因）。
+//
+// 只按时间判断新鲜度不够：页面切换时导航栈正在重建，若沿用上一页的结论，就会出现
+// 「刚进主页的某一帧仍按首页处理」——表现为偶发错位、滑动几下自愈。
+// 因此缓存以「导航栈代次」为键：栈一变（push/pop/切页）立即失效并即时重判。
 static BOOL gDYYYProfileContextCached = NO;
 static NSTimeInterval gDYYYProfileContextCachedAt = 0.0;
+static uintptr_t gDYYYProfileContextNavAddress = 0;
+static NSUInteger gDYYYProfileContextNavCount = 0;
+
+// 导航栈代次：同一导航控制器的地址在切页时不变，配合栈深度即可区分不同页面。
+static uintptr_t DYYYCurrentNavigationStackKey(UIView *view, NSUInteger *outCount) {
+    UIViewController *viewController = [DYYYUtils firstAvailableViewControllerFromView:view];
+    UINavigationController *navigationController = viewController.navigationController;
+    if (outCount) {
+        *outCount = navigationController ? navigationController.viewControllers.count : 0;
+    }
+    return (uintptr_t)navigationController;
+}
 
 // 在布局阶段（导航栈已完整）调用：记录结论，供随后的 setFrame: 使用。
 static void DYYYUpdateUserProfileContextCache(UIView *view) {
+    NSUInteger count = 0;
+    uintptr_t key = DYYYCurrentNavigationStackKey(view, &count);
+    gDYYYProfileContextNavAddress = key;
+    gDYYYProfileContextNavCount = count;
     gDYYYProfileContextCached = DYYYLiveCheckUserProfileContext(view);
     gDYYYProfileContextCachedAt = [NSDate timeIntervalSinceReferenceDate];
 }
 
-// 热路径使用：缓存比本次调用时刻更早，说明它是当前这次布局得到的结论，可直接采用。
+// 热路径使用：仅当「导航栈代次未变」且「缓存不晚于本次调用」时才采用缓存，否则即时判定。
 static BOOL DYYYViewIsInUserProfileContext(UIView *view) {
     NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
-    if (gDYYYProfileContextCachedAt > 0.0 && gDYYYProfileContextCachedAt <= now) {
+    NSUInteger count = 0;
+    uintptr_t key = DYYYCurrentNavigationStackKey(view, &count);
+    BOOL navChanged = (key != gDYYYProfileContextNavAddress) || (count != gDYYYProfileContextNavCount);
+    if (!navChanged && gDYYYProfileContextCachedAt > 0.0 && gDYYYProfileContextCachedAt <= now) {
         return gDYYYProfileContextCached;
     }
-    return DYYYLiveCheckUserProfileContext(view);
+
+    // 页面已切换（或尚无缓存）：立即判定，并把结果绑定到当前导航栈代次。
+    BOOL inProfile = DYYYLiveCheckUserProfileContext(view);
+    gDYYYProfileContextNavAddress = key;
+    gDYYYProfileContextNavCount = count;
+    gDYYYProfileContextCached = inProfile;
+    gDYYYProfileContextCachedAt = now;
+    return inProfile;
 }
 
 // 临时诊断：把作者主页的真实控制器链显示在屏幕顶部的独立窗口里，便于截图确认类名。
