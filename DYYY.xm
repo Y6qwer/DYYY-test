@@ -97,32 +97,6 @@ static NSURL *DYYYLoginBypassURLByReplacingBundleIdentifier(NSURL *url) {
     return [DYYYLoginBypassManager URLByReplacingTargetBundleIdentifiers:url];
 }
 
-// NSURLSessionConfiguration 的 -HTTPAdditionalHeaders 没有额外参数。
-// Logos 生成器对这个 selector 会把 %orig 展开成 _logos_orig$...(self, _cmd, )，
-// 尾部多出一个空实参（写 %orig 缺调用、写 %orig() 多逗号），两种写法都无法通过编译。
-// 因此这一处改用运行时挂钩绕开生成器，行为与组内其他几处保持一致。
-static IMP gDYYYOrigHTTPAdditionalHeaders = NULL;
-static IMP gDYYYOrigSetHTTPAdditionalHeaders = NULL;
-
-// 类型编码必须逐字匹配，否则 DYYYInstallRuntimeHook 会以 encoding-mismatch 静默跳过。
-// 不同 SDK 上既可能报完整形式（带偏移量），也可能报短形式，两种都允许。
-static const char *const kDYYYHTTPAdditionalHeadersEncodings[] = { "@16@0:8", "@@:" };
-static const char *const kDYYYSetHTTPAdditionalHeadersEncodings[] = { "v24@0:8@16", "v@:@" };
-
-static NSDictionary *DYYYReplacement_HTTPAdditionalHeaders(id self, SEL _cmd) {
-    NSDictionary *headers = gDYYYOrigHTTPAdditionalHeaders
-                                ? ((NSDictionary *(*)(id, SEL))gDYYYOrigHTTPAdditionalHeaders)(self, _cmd)
-                                : nil;
-    return DYYYLoginBypassHeadersByReplacingBundleIdentifiers(headers);
-}
-
-static void DYYYReplacement_setHTTPAdditionalHeaders(id self, SEL _cmd, NSDictionary *headers) {
-    if (gDYYYOrigSetHTTPAdditionalHeaders) {
-        ((void (*)(id, SEL, NSDictionary *))gDYYYOrigSetHTTPAdditionalHeaders)(
-            self, _cmd, DYYYLoginBypassHeadersByReplacingBundleIdentifiers(headers));
-    }
-}
-
 %group DYYYLoginBypassCore
 
 %hook NSBundle
@@ -170,6 +144,30 @@ static void DYYYReplacement_setHTTPAdditionalHeaders(id self, SEL _cmd, NSDictio
     %orig(DYYYLoginBypassURLByReplacingBundleIdentifier(url));
 }
 %end
+
+// NSURLSessionConfiguration 的 -HTTPAdditionalHeaders 没有额外参数。
+// Logos 生成器对该 selector 会把 %orig 展开成 _logos_orig$...(self, _cmd, )，
+// 尾部多出空实参（写 %orig 缺调用、写 %orig() 多逗号），两种写法都无法编译。
+// 因此这一处改用运行时挂钩绕开生成器。
+static IMP gDYYYOrigHTTPAdditionalHeaders = NULL;
+static IMP gDYYYOrigSetHTTPAdditionalHeaders = NULL;
+
+static const char *const kDYYYHTTPAdditionalHeadersEncodings[] = { "@16@0:8", "@@:" };
+static const char *const kDYYYSetHTTPAdditionalHeadersEncodings[] = { "v24@0:8@16", "v@:@" };
+
+static NSDictionary *DYYYReplacement_HTTPAdditionalHeaders(id self, SEL _cmd) {
+    NSDictionary *headers = gDYYYOrigHTTPAdditionalHeaders
+                                ? ((NSDictionary *(*)(id, SEL))gDYYYOrigHTTPAdditionalHeaders)(self, _cmd)
+                                : nil;
+    return DYYYLoginBypassHeadersByReplacingBundleIdentifiers(headers);
+}
+
+static void DYYYReplacement_setHTTPAdditionalHeaders(id self, SEL _cmd, NSDictionary *headers) {
+    if (gDYYYOrigSetHTTPAdditionalHeaders) {
+        ((void (*)(id, SEL, NSDictionary *))gDYYYOrigSetHTTPAdditionalHeaders)(
+            self, _cmd, DYYYLoginBypassHeadersByReplacingBundleIdentifiers(headers));
+    }
+}
 
 %end
 
@@ -414,91 +412,6 @@ static void updateGlobalTransparencyCache() {
     }
     gGlobalTransparency = kInvalidAlpha;
 }
-
-// 从作者主页进入视频详情页时，抖音把来源写成主页专属的 referString。
-// 沿响应链只能摸到最内层子控制器，因此同时按导航栈与父控制器两层匹配类名。
-static BOOL DYYYViewControllerChainContainsClassName(UIViewController *viewController, NSArray<NSString *> *classNames) {
-    if (!viewController || classNames.count == 0) {
-        return NO;
-    }
-
-    NSMutableArray<UIViewController *> *chain = [NSMutableArray array];
-    for (UIViewController *current = viewController; current; current = current.parentViewController) {
-        [chain addObject:current];
-        if (current.navigationController && ![chain containsObject:current.navigationController]) {
-            [chain addObject:current.navigationController];
-        }
-    }
-
-    for (UIViewController *current in chain) {
-        NSString *className = NSStringFromClass([current class]);
-        if (className.length == 0) {
-            continue;
-        }
-        for (NSString *candidate in classNames) {
-            if ([className containsString:candidate]) {
-                return YES;
-            }
-        }
-    }
-    return NO;
-}
-
-static NSString *DYYYVideoDetailReferString(UIViewController *viewController) {
-    if (!viewController) {
-        return nil;
-    }
-
-    id value = nil;
-    @try {
-        value = [viewController valueForKey:@"referString"];
-    } @catch (__unused NSException *exception) {
-        return nil;
-    }
-    return [value isKindOfClass:[NSString class]] ? (NSString *)value : nil;
-}
-
-// 视频详情页是否由作者/个人主页进入。referStringMatched 可为 NULL。
-static BOOL DYYYVideoDetailComesFromUserProfile(UIViewController *viewController, BOOL *referStringMatched) {
-    if (referStringMatched) {
-        *referStringMatched = NO;
-    }
-    if (!viewController) {
-        return NO;
-    }
-
-    NSString *referString = [DYYYVideoDetailReferString(viewController) lowercaseString];
-    if (referString.length > 0) {
-        // 主页专属来源串；这些页面没有底栏，不能按首页那样减去一条 TabBar 高度。
-        if ([referString isEqualToString:@"personal_homepage"] || [referString isEqualToString:@"others_homepage"] ||
-            [referString isEqualToString:@"user_homepage"] || [referString isEqualToString:@"profile_homepage"] ||
-            [referString isEqualToString:@"profile"]) {
-            if (referStringMatched) {
-                *referStringMatched = YES;
-            }
-            return YES;
-        }
-
-        // 兜底：抖音改文案模板时会写成 xxx_homepage / xxx_profile 之类，
-        // 只要不是推荐流、搜索、私信等已知非主页来源，再按控制器链二次确认。
-        if ([referString containsString:@"homepage"] && ![referString isEqualToString:@"homepage_hot"]) {
-            return DYYYViewControllerChainContainsClassName(
-                viewController, @[ @"UserHome", @"UserProfile", @"ProfileViewController", @"ProfileHome" ]);
-        }
-        return NO;
-    }
-
-    return DYYYViewControllerChainContainsClassName(
-        viewController, @[ @"UserHome", @"UserProfile", @"ProfileViewController", @"ProfileHome" ]);
-}
-
-// 视图是否位于「作者/个人主页的视频详情页」上下文里（按控制器链类名判断）。
-static BOOL DYYYViewIsInUserProfileDetailContext(UIView *view) {
-    UIViewController *viewController = [DYYYUtils firstAvailableViewControllerFromView:view];
-    return DYYYViewControllerChainContainsClassName(
-        viewController, @[ @"UserHome", @"UserProfile", @"ProfileViewController", @"ProfileHome" ]);
-}
-
 
 static NSDictionary<NSString *, NSString *> *DYYYTopTabTitleMapping(void) {
     static NSString *cachedRawValue = nil;
@@ -16249,7 +16162,6 @@ static Class tabBarButtonClass = nil;
 
     CGRect frame = self.view.frame;
     CGFloat screenWidth = [UIScreen mainScreen].bounds.size.width;
-    CGFloat screenHeight = [UIScreen mainScreen].bounds.size.height;
     CGFloat superviewHeight = self.view.superview.frame.size.height;
 
     if (frame.size.width != screenWidth && frame.size.height < superviewHeight) {
@@ -16261,10 +16173,6 @@ static Class tabBarButtonClass = nil;
     BOOL useFullHeight = [currentReferString isEqualToString:@"general_search"] || [currentReferString isEqualToString:@"search_result"] || [currentReferString isEqualToString:@"search_ecommerce"] ||
                          [currentReferString isEqualToString:@"close_friends_moment"] || [currentReferString isEqualToString:@"offline_mode"] || [currentReferString isEqualToString:@"challenge"] ||
                          [currentReferString isEqualToString:@"general_search_scan"] || currentReferString == nil || isShowingRelatedMixViewController;
-
-    // 作者主页进入的视频详情页底部没有底栏，若仍按首页逻辑减去 gCurrentTabBarHeight，
-    // 视频只占「屏幕高 − 底栏高」，下方空出的一条会露出相邻 cell 的画面。
-    BOOL comesFromUserProfile = DYYYVideoDetailComesFromUserProfile(self, NULL);
 
     if (!useFullHeight && [currentReferString isEqualToString:@"co_play_watch"]) {
         Class richContentVCClass = NSClassFromString(@"AWEFriendsImpl.RichContentNewListViewController");
@@ -16285,24 +16193,8 @@ static Class tabBarButtonClass = nil;
         }
     }
 
-    // 作者主页进入的视频详情页底部没有底栏，若仍按首页逻辑减去 gCurrentTabBarHeight，
-    // 视频只占「屏幕高 − 底栏高」，顶部留出黑边且下方露出相邻 cell 的画面。
-    // 注意：这里必须真正把 useFullHeight 置为 YES，只做判定不赋值是无效的。
-    if (!useFullHeight && comesFromUserProfile) {
-        useFullHeight = YES;
-    }
-
-    // 作者主页进入的视频详情页底部没有底栏：容器高度被算成「屏幕高 − 底栏高」（实测 926−83=843），
-    // 而 AWEAwemeDetailTableView 的 setFrame 会把表格高度补到屏幕高的整数倍。
-    // 两者不一致时，视频画面只铺到 843，底部就露出相邻 cell 的画面。
-    // 因此主页场景按屏幕高铺满，但绝不小于容器高度。
-    CGFloat fullscreenHeight = superviewHeight;
-    if (comesFromUserProfile) {
-        fullscreenHeight = MAX(superviewHeight, screenHeight);
-    }
-
     if (useFullHeight) {
-        frame.size.height = fullscreenHeight;
+        frame.size.height = superviewHeight;
     } else {
         frame.size.height = superviewHeight - gCurrentTabBarHeight;
     }
@@ -17319,110 +17211,6 @@ static void DYYYRemoveAppLifecycleObservers(void) {
         if (remainder != 0) {
             frame.size.height += (screenHeight - remainder);
         }
-
-        // 作者主页的视频详情页：容器高度被算成「屏幕高 − 底栏高」（实测 926−83=843），
-        // 而交互视图已按屏幕高铺满，表格若仍是 843 就会裁掉底部 83pt（表现为画面下方留黑带）。
-        // 这里对主页场景做确定性兜底：不到一屏就补到一屏。
-        if (frame.size.height < screenHeight) {
-            BOOL inProfile = DYYYViewIsInUserProfileDetailContext(self);
-            if (inProfile) {
-                frame.size.height = screenHeight;
-            }
-        }
-    }
-    %orig(frame);
-}
-
-// 表格在主页场景仍被宿主还原成 843（约束或后续布局），这里在 layout 之后强制顶到整屏：
-// 表格是裁剪窗口，843 的窗口配 926 的 cell 必然每次都露出 83pt 相邻画面。
-- (void)layoutSubviews {
-    %orig;
-
-    if (!DYYYGetBool(@"DYYYEnableFullScreen")) {
-        return;
-    }
-    CGFloat screenHeight = [UIScreen mainScreen].bounds.size.height;
-    if (self.frame.size.height >= screenHeight) {
-        return;
-    }
-    if (!DYYYViewIsInUserProfileDetailContext(self)) {
-        return;
-    }
-
-    CGRect frame = self.frame;
-    if (frame.size.height < screenHeight) {
-        // 终极修法：宿主对表格高度施加了 Auto Layout 约束，单纯改 frame 会被约束系统
-        // 立刻还原（这是此前多轮修改都无效的根本原因）。这里把「固定高度」类约束拆掉，
-        // 再直接设定 frame——没有约束约束它，高度就稳定在整屏。
-        NSMutableArray<NSLayoutConstraint *> *heightConstraints = [NSMutableArray array];
-        for (NSLayoutConstraint *constraint in self.constraints) {
-            if (constraint.firstItem != self && constraint.secondItem != self) {
-                continue;
-            }
-            if (constraint.firstAttribute == NSLayoutAttributeHeight ||
-                constraint.secondAttribute == NSLayoutAttributeHeight) {
-                // 只拆固定高度（两个属性都是 height 且无第二项），不碰相对父视图的比例/间距约束。
-                if (constraint.secondItem == nil) {
-                    [heightConstraints addObject:constraint];
-                }
-            }
-        }
-        if (heightConstraints.count > 0) {
-            [self removeConstraints:heightConstraints];
-        }
-
-        frame.size.height = screenHeight;
-        self.frame = frame;
-    }
-
-    // 宿主布局可能在本方法之后继续覆盖，延到本次 runloop 末尾统一收口：
-    // ① 表格窗口顶到整屏；② 把可见 cell 全部统一到整屏高（不同页原本 843/926 混杂，
-    // 滚到 843 的页就会露出相邻内容，这正是「时好时坏」的来源）；
-    // ③ 关掉分页吸附——吸附要求「窗口高 == 页高」，是本问题链的根源假设。
-    __weak AWEAwemeDetailTableView *weakSelf = self;
-    dispatch_async(dispatch_get_main_queue(), ^{
-      AWEAwemeDetailTableView *strongSelf = weakSelf;
-      if (!strongSelf) {
-          return;
-      }
-      if (!DYYYViewIsInUserProfileDetailContext(strongSelf)) {
-          return;
-      }
-      CGFloat height = [UIScreen mainScreen].bounds.size.height;
-
-      CGRect lateFrame = strongSelf.frame;
-      if (lateFrame.size.height < height) {
-          lateFrame.size.height = height;
-          strongSelf.frame = lateFrame;
-      }
-      strongSelf.pagingEnabled = NO;
-
-      for (UIView *candidate in strongSelf.subviews) {
-          if (![candidate isKindOfClass:NSClassFromString(@"AWEAwemeDetailTableViewCell")]) {
-              continue;
-          }
-          CGRect cellFrame = candidate.frame;
-          if (cellFrame.size.height > 1.0 && cellFrame.size.height < height) {
-              cellFrame.size.height = height;
-              candidate.frame = cellFrame;
-          }
-      }
-    });
-}
-
-%end
-
-// 作者主页的视频详情 cell：它是这条测量链的源头——表格、内容视图、视频渲染层都跟着 cell 高度走。
-// 宿主把它算成「屏幕高 − 底栏高」（926−83=843），于是画面下方空出 83pt 露出相邻内容。
-// 这里在主页场景把它顶回整屏高（高度可逆，离开主页不生效）。
-%hook AWEAwemeDetailTableViewCell
-
-- (void)setFrame:(CGRect)frame {
-    if (DYYYGetBool(@"DYYYEnableFullScreen") && frame.size.height > 0.0) {
-        CGFloat screenHeight = [UIScreen mainScreen].bounds.size.height;
-        if (frame.size.height < screenHeight && DYYYViewIsInUserProfileDetailContext(self)) {
-            frame.size.height = screenHeight;
-        }
     }
     %orig(frame);
 }
@@ -17839,8 +17627,7 @@ static NSString *const kHideRecentUsersKey = @"DYYYHideSidebarRecentUsers";
     %init(DYYYLoginBypassCore);
     DYYYHookManagerStartAfterLoginCorePhase();
 
-    // NSURLSessionConfiguration 的两个 header 方法改用运行时挂钩（见文件上方说明），
-    // %init(DYYYLoginBypassCore) 之后立即安装，保持与原来相同的生效时机。
+    // NSURLSessionConfiguration 的两个 header 方法用运行时挂钩安装（见文件上方说明）。
     Class sessionConfigurationClass = objc_getClass("NSURLSessionConfiguration");
     if (sessionConfigurationClass &&
         class_getInstanceMethod(sessionConfigurationClass, @selector(HTTPAdditionalHeaders))) {
