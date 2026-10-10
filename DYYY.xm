@@ -455,6 +455,28 @@ static NSDictionary<NSString *, NSString *> *DYYYTopTabTitleMapping(void) {
     return cachedMapping;
 }
 
+// 视图是否位于「作者/个人主页」上下文里。
+// 这类页面（他人主页、个人主页）的容器是 AWEStoryContainerCollectionView，与首页
+// （AWEFeedTableView）结构不同：「启用首页全屏」那套排版改动只适用于首页，在主页上
+// 会导致裁剪窗口与 cell 高度不一致而露出相邻作品，因此主页一律跳过全屏排版、走默认。
+static BOOL DYYYViewIsInUserProfileContext(UIView *view) {
+    if (!view) {
+        return NO;
+    }
+
+    UIViewController *viewController = [DYYYUtils firstAvailableViewControllerFromView:view];
+    for (UIViewController *current = viewController; current; current = current.parentViewController) {
+        NSString *className = NSStringFromClass([current class]);
+        if (className.length == 0) {
+            continue;
+        }
+        if ([className containsString:@"UserHome"] || [className containsString:@"UserProfile"]) {
+            return YES;
+        }
+    }
+    return NO;
+}
+
 static NSString *DYYYCustomAssetsDirectory(void) {
     static NSString *customDirectory = nil;
     static dispatch_once_t onceToken;
@@ -15931,7 +15953,7 @@ static Class tabBarButtonClass = nil;
         return;
     }
 
-    if (DYYYGetBoolCached(@"DYYYEnableFullScreen")) {
+    if (DYYYGetBoolCached(@"DYYYEnableFullScreen") && !DYYYViewIsInUserProfileContext(self)) {
         UIViewController *vc = [DYYYUtils firstAvailableViewControllerFromView:self];
         if ([vc isKindOfClass:%c(AWEAwemeDetailTableViewController)] ||
             [vc isKindOfClass:%c(AWEAwemeDetailCellViewController)]) {
@@ -15957,7 +15979,10 @@ static Class tabBarButtonClass = nil;
     // 同一次布局里最多只回溯一次响应链，下面两段判定共用结果。
     UIViewController *vc = [DYYYUtils firstAvailableViewControllerFromView:self];
 
-    if (enableFS) {
+    // 作者/个人主页跳过全屏排版，保留抖音默认（评论区毛玻璃 enableBlur 不受影响）。
+    BOOL inUserProfile = DYYYViewIsInUserProfileContext(self);
+
+    if (enableFS && !inUserProfile) {
         if (self.frame.size.height == originalTabBarHeight && originalTabBarHeight > 0) {
             if ([vc isKindOfClass:%c(AWEMixVideoPanelDetailTableViewController)] || [vc isKindOfClass:%c(AWECommentInputViewController)] ||
                 [vc isKindOfClass:%c(AWEAwemeDetailTableViewController)]) {
@@ -15966,7 +15991,7 @@ static Class tabBarButtonClass = nil;
         }
     }
 
-    if ([vc isKindOfClass:%c(AWEPlayInteractionViewController)]) {
+    if (!inUserProfile && [vc isKindOfClass:%c(AWEPlayInteractionViewController)]) {
         for (UIView *subview in self.subviews) {
             if ([subview isKindOfClass:[UIView class]] && subview.backgroundColor && CGColorEqualToColor(subview.backgroundColor.CGColor, [UIColor blackColor].CGColor)) {
                 subview.hidden = YES;
@@ -16008,7 +16033,7 @@ static Class tabBarButtonClass = nil;
         }
     }
 
-    if (isPlayVC && enableFS) {
+    if (isPlayVC && enableFS && !DYYYViewIsInUserProfileContext(self)) {
         if (frame.origin.x != 0 && frame.origin.y != 0) {
             %orig(frame);
             return;
@@ -16127,6 +16152,11 @@ static Class tabBarButtonClass = nil;
     }
 
     if (!DYYYGetBool(@"DYYYEnableFullScreen")) {
+        return;
+    }
+
+    // 作者/个人主页保持抖音默认排版，不介入全屏（该页容器结构与首页不同）。
+    if (DYYYViewIsInUserProfileContext(self.view)) {
         return;
     }
 
@@ -16300,7 +16330,7 @@ static Class tabBarButtonClass = nil;
 
 - (void)viewDidLayoutSubviews {
     %orig;
-    if (DYYYGetBool(@"DYYYEnableFullScreen")) {
+    if (DYYYGetBool(@"DYYYEnableFullScreen") && !DYYYViewIsInUserProfileContext(self.view)) {
         UIView *contentView = self.contentView;
         if (contentView && contentView.superview) {
             CGRect frame = contentView.frame;
@@ -16348,7 +16378,7 @@ static Class tabBarButtonClass = nil;
 
 - (void)viewDidLayoutSubviews {
     %orig;
-    if (DYYYGetBool(@"DYYYEnableFullScreen")) {
+    if (DYYYGetBool(@"DYYYEnableFullScreen") && !DYYYViewIsInUserProfileContext(self.view)) {
         UIView *contentView = self.contentView;
         if (contentView && contentView.superview) {
             CGRect frame = contentView.frame;
@@ -17023,7 +17053,7 @@ static void DYYYRemoveAppLifecycleObservers(void) {
 - (void)setCenter:(CGPoint)center {
     BOOL shouldAdjust = NO;
     UIView *view = (UIView *)self;
-    if (DYYYGetBool(@"DYYYEnableFullScreen")) {
+    if (DYYYGetBool(@"DYYYEnableFullScreen") && !DYYYViewIsInUserProfileContext(view)) {
         CGFloat viewWidth = CGRectGetWidth(view.bounds);
         CGFloat screenWidth = [UIScreen mainScreen].bounds.size.width;
         if (viewWidth + 0.5f >= screenWidth) {
@@ -17054,7 +17084,7 @@ static void DYYYRemoveAppLifecycleObservers(void) {
 - (void)setCenter:(CGPoint)center {
     BOOL shouldAdjust = NO;
     UIView *view = (UIView *)self;
-    if (DYYYGetBool(@"DYYYEnableFullScreen")) {
+    if (DYYYGetBool(@"DYYYEnableFullScreen") && !DYYYViewIsInUserProfileContext(view)) {
         CGFloat viewWidth = CGRectGetWidth(view.bounds);
         CGFloat screenWidth = [UIScreen mainScreen].bounds.size.width;
         if (viewWidth + 0.5f >= screenWidth) {
@@ -17085,7 +17115,7 @@ static void DYYYRemoveAppLifecycleObservers(void) {
 - (void)setCenter:(CGPoint)center {
     BOOL shouldAdjust = NO;
     UIView *view = (UIView *)self;
-    if (DYYYGetBool(@"DYYYEnableFullScreen")) {
+    if (DYYYGetBool(@"DYYYEnableFullScreen") && !DYYYViewIsInUserProfileContext(view)) {
         CGFloat viewWidth = CGRectGetWidth(view.bounds);
         CGFloat screenWidth = [UIScreen mainScreen].bounds.size.width;
         if (viewWidth + 0.5f >= screenWidth) {
@@ -17204,7 +17234,8 @@ static void DYYYRemoveAppLifecycleObservers(void) {
 %hook AWEAwemeDetailTableView
 
 - (void)setFrame:(CGRect)frame {
-    if (DYYYGetBool(@"DYYYEnableFullScreen")) {
+    // 作者/个人主页保持抖音默认：该页容器高度与 cell 高度由宿主决定，补整会导致裁出相邻作品。
+    if (DYYYGetBool(@"DYYYEnableFullScreen") && !DYYYViewIsInUserProfileContext(self)) {
         CGFloat screenHeight = [UIScreen mainScreen].bounds.size.height;
 
         CGFloat remainder = fmod(frame.size.height, screenHeight);
