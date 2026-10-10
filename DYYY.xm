@@ -456,22 +456,41 @@ static NSDictionary<NSString *, NSString *> *DYYYTopTabTitleMapping(void) {
 }
 
 // 视图是否位于「作者/个人主页」上下文里。
-// 这类页面（他人主页、个人主页）的容器是 AWEStoryContainerCollectionView，与首页
-// （AWEFeedTableView）结构不同：「启用首页全屏」那套排版改动只适用于首页，在主页上
-// 会导致裁剪窗口与 cell 高度不一致而露出相邻作品，因此主页一律跳过全屏排版、走默认。
+//
+// 实测（Aweme 40.6.0）作者主页详情页的控制器链为：
+//   AWEPlayInteractionViewController > RichContentNewListViewController
+//   > RichContentContainerViewController > AWEAwemeDetailCellViewController
+//   > AWEAwemeDetailTableViewController > AWEBaseRootNavigationController
+//   > AWENormalModeTabBarController
+// 而「AWEUserDetailViewControllerV2」（作者主页）只出现在导航栈里、不在 parentViewController
+// 链上，所以必须同时查导航栈，否则判断永远不命中（历史版本用 UserHome/UserProfile 匹配，
+// 从未生效）。这类页面结构与首页不同：「启用首页全屏」那套排版改动只适用于首页，
+// 在主页上会导致裁剪窗口与 cell 高度不一致而露出相邻作品，因此主页一律跳过全屏排版。
 static BOOL DYYYViewIsInUserProfileContext(UIView *view) {
     if (!view) {
         return NO;
     }
 
+    NSArray<NSString *> *profileMarkers = @[ @"UserDetailViewController", @"UserHome", @"UserProfile" ];
+    NSMutableArray<UIViewController *> *candidates = [NSMutableArray array];
+
     UIViewController *viewController = [DYYYUtils firstAvailableViewControllerFromView:view];
     for (UIViewController *current = viewController; current; current = current.parentViewController) {
+        [candidates addObject:current];
+    }
+    if (viewController.navigationController) {
+        [candidates addObjectsFromArray:viewController.navigationController.viewControllers];
+    }
+
+    for (UIViewController *current in candidates) {
         NSString *className = NSStringFromClass([current class]);
         if (className.length == 0) {
             continue;
         }
-        if ([className containsString:@"UserHome"] || [className containsString:@"UserProfile"]) {
-            return YES;
+        for (NSString *marker in profileMarkers) {
+            if ([className containsString:marker]) {
+                return YES;
+            }
         }
     }
     return NO;
