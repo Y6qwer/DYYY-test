@@ -17542,19 +17542,49 @@ static void DYYYRemoveAppLifecycleObservers(void) {
         // 这里对主页场景做确定性兜底：不到一屏就补到一屏。
         if (frame.size.height < screenHeight) {
             BOOL inProfile = DYYYViewIsInUserProfileDetailContext(self);
-            // 临时诊断：确认该 hook 是否被调用、判定是否命中（1 秒限流）。
-            static NSTimeInterval dyyyLastTableLogTime = 0;
-            NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
-            if (now - dyyyLastTableLogTime >= 1.0) {
-                dyyyLastTableLogTime = now;
-                NSLog(@"[DYYY][TableFS] inH=%.1f screenH=%.1f inProfile=%d", frame.size.height, screenHeight, inProfile);
-            }
             if (inProfile) {
                 frame.size.height = screenHeight;
             }
         }
     }
     %orig(frame);
+}
+
+// 表格在主页场景仍被宿主还原成 843（约束或后续布局），这里在 layout 之后强制顶到整屏：
+// 表格是裁剪窗口，843 的窗口配 926 的 cell 必然每次都露出 83pt 相邻画面。
+- (void)layoutSubviews {
+    %orig;
+
+    if (!DYYYGetBool(@"DYYYEnableFullScreen")) {
+        return;
+    }
+    CGFloat screenHeight = [UIScreen mainScreen].bounds.size.height;
+    if (self.frame.size.height >= screenHeight) {
+        return;
+    }
+    if (!DYYYViewIsInUserProfileDetailContext(self)) {
+        return;
+    }
+
+    CGRect frame = self.frame;
+    if (frame.size.height < screenHeight) {
+        frame.size.height = screenHeight;
+        self.frame = frame;
+    }
+
+    // 宿主布局可能在本方法之后继续覆盖，延到本次 runloop 末尾再设定一次。
+    __weak AWEAwemeDetailTableView *weakSelf = self;
+    dispatch_async(dispatch_get_main_queue(), ^{
+      AWEAwemeDetailTableView *strongSelf = weakSelf;
+      if (!strongSelf) {
+          return;
+      }
+      CGRect lateFrame = strongSelf.frame;
+      if (lateFrame.size.height < screenHeight && DYYYViewIsInUserProfileDetailContext(strongSelf)) {
+          lateFrame.size.height = screenHeight;
+          strongSelf.frame = lateFrame;
+      }
+    });
 }
 
 %end
