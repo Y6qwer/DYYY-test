@@ -492,6 +492,41 @@ static BOOL DYYYVideoDetailComesFromUserProfile(UIViewController *viewController
         viewController, @[ @"UserHome", @"UserProfile", @"ProfileViewController", @"ProfileHome" ]);
 }
 
+// 视图是否位于「作者/个人主页的视频详情页」上下文里（按控制器链类名判断）。
+static BOOL DYYYViewIsInUserProfileDetailContext(UIView *view) {
+    UIViewController *viewController = [DYYYUtils firstAvailableViewControllerFromView:view];
+    return DYYYViewControllerChainContainsClassName(
+        viewController, @[ @"UserHome", @"UserProfile", @"ProfileViewController", @"ProfileHome" ]);
+}
+
+// 临时诊断：列出窗口里所有「高度或宽度 > 600pt」的视图及其层级缩进，
+// 一次性看清 843 这个高度到底卡在哪一层（避免逐层猜）。
+static void DYYYCollectLargeViews(UIView *view, NSMutableString *out, NSInteger depth, NSInteger *budget, NSInteger *count) {
+    if (!view || depth > 30 || *budget <= 0 || *count >= 40) {
+        return;
+    }
+    *budget -= 1;
+
+    CGFloat height = view.frame.size.height;
+    CGFloat width = view.frame.size.width;
+    if (height > 600.0 || width > 600.0) {
+        NSString *className = NSStringFromClass([view class]);
+        if (className.length > 44) {
+            className = [className substringToIndex:44];
+        }
+        NSMutableString *indent = [NSMutableString string];
+        for (NSInteger index = 0; index < MIN(depth, 12); index++) {
+            [indent appendString:@"."];
+        }
+        [out appendFormat:@"%@%@\n%@ h=%.0f w=%.0f y=%.0f x=%.0f\n",
+                          indent, className, indent, height, width, view.frame.origin.y, view.frame.origin.x];
+        *count += 1;
+    }
+    for (UIView *subview in view.subviews) {
+        DYYYCollectLargeViews(subview, out, depth + 1, budget, count);
+    }
+}
+
 // 临时诊断：列出窗口里所有可见的滚动容器（跳过诊断浮窗自身），用于找出被挪动 83pt 的那一层。
 static void DYYYCollectScrollViews(UIView *view, NSMutableString *out, NSInteger depth, NSInteger *budget) {
     if (!view || depth > 30 || *budget <= 0) {
@@ -557,21 +592,18 @@ static void DYYYUpdateFullscreenDiagnostic(UIViewController *viewController, NSS
         if (candidateWindow.hidden || candidateWindow.alpha < 0.01 || candidateWindow == dyyyDiagnosticWindow) {
             continue;
         }
-        NSInteger budget = 400;
-        DYYYCollectScrollViews(candidateWindow, scrollText, 0, &budget);
+        NSInteger budget = 3000;
+        NSInteger count = 0;
+        DYYYCollectLargeViews(candidateWindow, scrollText, 0, &budget, &count);
     }
     if (scrollText.length == 0) {
-        [scrollText appendString:@"(no scroll view)"];
+        [scrollText appendString:@"(no large view)"];
     }
 
     NSString *text = [NSString stringWithFormat:
-                                   @"source=%@\nrefer=%@\nfullH=%@\nscreen=%.1f  superH=%.1f\ncurH=%.1f  tabBar=%.1f\nframe w=%.1f  x=%.1f  y=%.1f\nparent=%.1f  insetB=%.1f\n--- scroll views ---\n%@",
-                                   source, DYYYVideoDetailReferString(viewController) ?: @"(nil)",
-                                   useFullHeight ? @"YES" : @"NO", screenHeight, superviewHeight,
-                                   frame.size.height, gCurrentTabBarHeight,
-                                   frame.size.width, frame.origin.x, frame.origin.y,
-                                   viewController.view.superview ? viewController.view.superview.frame.size.height : -1.0,
-                                   viewController.view.window.safeAreaInsets.bottom, scrollText];
+                                   @"scr=%.0f ctrlH=%.0f tab=%.0f full=%@\n=== large views (h>600) ===\n%@",
+                                   screenHeight, frame.size.height, gCurrentTabBarHeight,
+                                   useFullHeight ? @"Y" : @"N", scrollText];
     dyyyDiagnosticLabel.text = text;
     CGSize fit = [dyyyDiagnosticLabel sizeThatFits:CGSizeMake(dyyyDiagnosticWindow.bounds.size.width - 16.0, CGFLOAT_MAX)];
     CGFloat labelWidth = dyyyDiagnosticWindow.bounds.size.width - 16.0;
@@ -17445,6 +17477,13 @@ static void DYYYRemoveAppLifecycleObservers(void) {
         CGFloat remainder = fmod(frame.size.height, screenHeight);
         if (remainder != 0) {
             frame.size.height += (screenHeight - remainder);
+        }
+
+        // 作者主页的视频详情页：容器高度被算成「屏幕高 − 底栏高」（实测 926−83=843），
+        // 而交互视图已按屏幕高铺满，表格若仍是 843 就会裁掉底部 83pt（表现为画面下方留黑带）。
+        // 这里对主页场景做确定性兜底：不到一屏就补到一屏。
+        if (frame.size.height < screenHeight && DYYYViewIsInUserProfileDetailContext(self)) {
+            frame.size.height = screenHeight;
         }
     }
     %orig(frame);
