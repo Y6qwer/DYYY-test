@@ -41,6 +41,7 @@
 #import "DYYYHighFPSHooks.h"
 #import "DYYYFPSOverlay.h"
 #import "DYYYHookManager.h"
+#import "DYYYRuntimeHookInstaller.h"
 #import "DYYYMiniProgramRewardBypass.h"
 #import "DYYYPrivacyRecordUploadGuard.h"
 #import "DYYYSettingViewController.h"
@@ -96,6 +97,32 @@ static NSURL *DYYYLoginBypassURLByReplacingBundleIdentifier(NSURL *url) {
     return [DYYYLoginBypassManager URLByReplacingTargetBundleIdentifiers:url];
 }
 
+// NSURLSessionConfiguration 的 -HTTPAdditionalHeaders 没有额外参数。
+// Logos 生成器对这个 selector 会把 %orig 展开成 _logos_orig$...(self, _cmd, )，
+// 尾部多出一个空实参（写 %orig 缺调用、写 %orig() 多逗号），两种写法都无法通过编译。
+// 因此这一处改用运行时挂钩绕开生成器，行为与组内其他几处保持一致。
+static IMP gDYYYOrigHTTPAdditionalHeaders = NULL;
+static IMP gDYYYOrigSetHTTPAdditionalHeaders = NULL;
+
+// 类型编码必须逐字匹配，否则 DYYYInstallRuntimeHook 会以 encoding-mismatch 静默跳过。
+// 不同 SDK 上既可能报完整形式（带偏移量），也可能报短形式，两种都允许。
+static const char *const kDYYYHTTPAdditionalHeadersEncodings[] = { "@16@0:8", "@@:" };
+static const char *const kDYYYSetHTTPAdditionalHeadersEncodings[] = { "v24@0:8@16", "v@:@" };
+
+static NSDictionary *DYYYReplacement_HTTPAdditionalHeaders(id self, SEL _cmd) {
+    NSDictionary *headers = gDYYYOrigHTTPAdditionalHeaders
+                                ? ((NSDictionary *(*)(id, SEL))gDYYYOrigHTTPAdditionalHeaders)(self, _cmd)
+                                : nil;
+    return DYYYLoginBypassHeadersByReplacingBundleIdentifiers(headers);
+}
+
+static void DYYYReplacement_setHTTPAdditionalHeaders(id self, SEL _cmd, NSDictionary *headers) {
+    if (gDYYYOrigSetHTTPAdditionalHeaders) {
+        ((void (*)(id, SEL, NSDictionary *))gDYYYOrigSetHTTPAdditionalHeaders)(
+            self, _cmd, DYYYLoginBypassHeadersByReplacingBundleIdentifiers(headers));
+    }
+}
+
 %group DYYYLoginBypassCore
 
 %hook NSBundle
@@ -141,16 +168,6 @@ static NSURL *DYYYLoginBypassURLByReplacingBundleIdentifier(NSURL *url) {
 
 - (void)setURL:(NSURL *)url {
     %orig(DYYYLoginBypassURLByReplacingBundleIdentifier(url));
-}
-%end
-
-%hook NSURLSessionConfiguration
-- (NSDictionary *)HTTPAdditionalHeaders {
-    return DYYYLoginBypassHeadersByReplacingBundleIdentifiers(%orig());
-}
-
-- (void)setHTTPAdditionalHeaders:(NSDictionary *)headers {
-    %orig(DYYYLoginBypassHeadersByReplacingBundleIdentifiers(headers));
 }
 %end
 
@@ -17753,6 +17770,36 @@ static NSString *const kHideRecentUsersKey = @"DYYYHideSidebarRecentUsers";
 
     %init(DYYYLoginBypassCore);
     DYYYHookManagerStartAfterLoginCorePhase();
+
+    // NSURLSessionConfiguration 的两个 header 方法改用运行时挂钩（见文件上方说明），
+    // %init(DYYYLoginBypassCore) 之后立即安装，保持与原来相同的生效时机。
+    Class sessionConfigurationClass = objc_getClass("NSURLSessionConfiguration");
+    if (sessionConfigurationClass &&
+        class_getInstanceMethod(sessionConfigurationClass, @selector(HTTPAdditionalHeaders))) {
+        DYYYInstallRuntimeHook((DYYYRuntimeHookRequest){
+            .identifier = "login-bypass-http-additional-headers",
+            .targetClass = sessionConfigurationClass,
+            .selector = @selector(HTTPAdditionalHeaders),
+            .classMethod = NO,
+            .replacement = (IMP)DYYYReplacement_HTTPAdditionalHeaders,
+            .allowedTypeEncodings = kDYYYHTTPAdditionalHeadersEncodings,
+            .allowedTypeEncodingCount = 2,
+            .originalImplementation = &gDYYYOrigHTTPAdditionalHeaders,
+        });
+    }
+    if (sessionConfigurationClass &&
+        class_getInstanceMethod(sessionConfigurationClass, @selector(setHTTPAdditionalHeaders:))) {
+        DYYYInstallRuntimeHook((DYYYRuntimeHookRequest){
+            .identifier = "login-bypass-set-http-additional-headers",
+            .targetClass = sessionConfigurationClass,
+            .selector = @selector(setHTTPAdditionalHeaders:),
+            .classMethod = NO,
+            .replacement = (IMP)DYYYReplacement_setHTTPAdditionalHeaders,
+            .allowedTypeEncodings = kDYYYSetHTTPAdditionalHeadersEncodings,
+            .allowedTypeEncodingCount = 2,
+            .originalImplementation = &gDYYYOrigSetHTTPAdditionalHeaders,
+        });
+    }
 
     Class loginListenerClass = objc_getClass("AWEUserServiceListener");
     if (loginListenerClass && class_getInstanceMethod(loginListenerClass, @selector(didFinishLoginWithUid:))) {
