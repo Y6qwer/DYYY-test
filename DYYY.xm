@@ -466,44 +466,18 @@ static NSDictionary<NSString *, NSString *> *DYYYTopTabTitleMapping(void) {
 // 链上，所以必须同时查导航栈，否则判断永远不命中（历史版本用 UserHome/UserProfile 匹配，
 // 从未生效）。这类页面结构与首页不同：「启用首页全屏」那套排版改动只适用于首页，
 // 在主页上会导致裁剪窗口与 cell 高度不一致而露出相邻作品，因此主页一律跳过全屏排版。
-// 立即查询：作者/个人主页上下文。
-// 两路独立判定（任一命中即可），因为各有失效场景：
-//   A. 模型来源串：从作者主页打开作品时 referString 为主页专属值，页面一出现就能取到，
-//      不依赖导航栈是否已建立；
-//   B. parentViewController 链 + 导航栈：实测作者主页控制器是 AWEUserDetailViewControllerV2，
-//      且只出现在导航栈里（parent 链上没有），所以必须单独查导航栈。
+// 立即查询：parentViewController 链 + 导航栈里是否有作者/个人主页控制器。
+// 注意：导航栈在页面早期可能尚未建立，所以这个即时查询结果会随时序变化，
+// 不能单独用于 setFrame: 这类会被提前调用的热路径（见下方缓存版本）。
 static BOOL DYYYLiveCheckUserProfileContext(UIView *view) {
     if (!view) {
         return NO;
     }
 
-    UIViewController *viewController = [DYYYUtils firstAvailableViewControllerFromView:view];
-
-    // A. 模型来源串
-    NSString *refer = nil;
-    if ([viewController respondsToSelector:@selector(referString)]) {
-        refer = [viewController valueForKey:@"referString"];
-    }
-    if (![refer isKindOfClass:[NSString class]] || refer.length == 0) {
-        AWEAwemeModel *model = [viewController respondsToSelector:@selector(model)]
-                                   ? [viewController valueForKey:@"model"]
-                                   : nil;
-        if ([model isKindOfClass:[AWEAwemeModel class]] && [model respondsToSelector:@selector(referString)]) {
-            refer = model.referString;
-        }
-    }
-    if ([refer isKindOfClass:[NSString class]] && refer.length > 0) {
-        NSString *lower = [[refer lowercaseString] stringByTrimmingCharactersInSet:
-                                                   [NSCharacterSet whitespaceAndNewlineCharacterSet]];
-        if ([lower containsString:@"homepage"] || [lower containsString:@"user_detail"] ||
-            [lower containsString:@"userdetail"]) {
-            return YES;
-        }
-    }
-
-    // B. 控制器链 + 导航栈
     NSArray<NSString *> *profileMarkers = @[ @"UserDetailViewController", @"UserHome", @"UserProfile" ];
     NSMutableArray<UIViewController *> *candidates = [NSMutableArray array];
+
+    UIViewController *viewController = [DYYYUtils firstAvailableViewControllerFromView:view];
     for (UIViewController *current = viewController; current; current = current.parentViewController) {
         [candidates addObject:current];
     }
@@ -523,32 +497,6 @@ static BOOL DYYYLiveCheckUserProfileContext(UIView *view) {
         }
     }
     return NO;
-}
-
-// 异步自纠正：若首帧判定来晚了而按首页排版，下一帧把高度改回屏幕高度。
-// 作者主页的显示异常本质上就是「容器被算成 屏幕高 − 底栏高」，这里直接修正。
-static void DYYYScheduleUserProfileHeightCorrection(UIView *anchorView) {
-    if (!anchorView || gCurrentTabBarHeight <= 0) {
-        return;
-    }
-    __weak UIView *weakAnchor = anchorView;
-    dispatch_async(dispatch_get_main_queue(), ^{
-      UIView *anchor = weakAnchor;
-      if (!anchor) {
-          return;
-      }
-      CGFloat screenHeight = [UIScreen mainScreen].bounds.size.height;
-      CGRect frame = anchor.frame;
-      if (frame.size.height <= 0.0 || fabs(frame.size.height - screenHeight) < 0.5) {
-          return;
-      }
-      // 只修正「正好少一个底栏高度」的情况，避免误伤其它合法高度。
-      if (fabs((screenHeight - frame.size.height) - gCurrentTabBarHeight) > 3.0) {
-          return;
-      }
-      frame.size.height = screenHeight;
-      anchor.frame = frame;
-    });
 }
 
 // 「当前在作者主页」的结论缓存。
@@ -16235,10 +16183,6 @@ static Class tabBarButtonClass = nil;
     // 否则第一次打开详情页时缓存还是上一页的旧结论，首帧会按首页处理、画面出现错位，
     // 关闭重开才会正常（这正是「打开是坏的，重开就好」的原因）。
     DYYYUpdateUserProfileContextCache(self.view);
-    // 兜底：若首帧仍晚了一步（导航栈此刻还没建立），下一帧把高度纠正回来。
-    if (DYYYLiveCheckUserProfileContext(self.view)) {
-        DYYYScheduleUserProfileHeightCorrection(self.view.superview);
-    }
     dyyyInteractionViewVisible = YES;
     dyyyActivePlaybackInteractionController = self;
     DYYYScheduleCurrentAwemeTracking(self, self.model);
